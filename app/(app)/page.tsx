@@ -13,6 +13,30 @@ export default async function Home({ searchParams }: { searchParams: { submitted
   const now = thaiParts(Date.now());
   const hello = `${greeting(now.hour)}, ${ctx.displayName.split(' ')[0]}!`;
 
+  // ล็อกอินได้แต่ยังไม่มีสิทธิ์ใดๆ (ไม่ใช่แอดมิน และยังไม่ผูกรหัสพนักงาน)
+  if (!ctx.isAdmin && ctx.employees.length === 0) {
+    return (
+      <div className="space-y-5">
+        <h1 className="text-base font-bold text-brand-600 sm:text-lg">{hello}</h1>
+        <section className="card max-w-3xl space-y-3">
+          <h2 className="card-title">บัญชีนี้ยังไม่ได้รับสิทธิ์ใช้งาน</h2>
+          <p className="text-sm text-slate-600">
+            ถ้าคุณเป็น <b>Super Admin คนแรก</b> ให้เปิด Supabase → SQL Editor แล้วรันคำสั่งนี้ครั้งเดียว จากนั้นรีเฟรชหน้านี้
+            เมนู <b>ใบลา / พนักงาน / รายงาน / ตั้งค่า</b> จะปรากฏ:
+          </p>
+          <pre className="overflow-x-auto rounded-2xl bg-slate-900 p-4 text-xs leading-relaxed text-slate-100">
+{`insert into public.company_admins (user_id, company_id, role, full_name)
+select id, null, 'super_admin', 'ชื่อแอดมิน'
+from auth.users where email = '${ctx.email}';`}
+          </pre>
+          <p className="text-sm text-slate-500">
+            ถ้าคุณเป็นพนักงาน กรุณาติดต่อฝ่ายบุคคลเพื่อเพิ่มรหัสพนักงานของคุณ
+          </p>
+        </section>
+      </div>
+    );
+  }
+
   return ctx.isAdmin ? (
     <AdminHome hello={hello} today={now.date} />
   ) : (
@@ -25,24 +49,29 @@ async function EmployeeHome({ hello, submitted }: { hello: string; submitted: bo
   const ctx = await getContext();
   const supabase = createClient();
 
-  const { data } = await supabase
-    .from('leave_requests')
-    .select('*, leave_types(name, code)')
-    .in('employee_id', ctx.employees.map((e) => e.id))
-    .order('submitted_at', { ascending: false })
-    .limit(30);
+  const first = ctx.employees[0];
+
+  // สองคำขอทำงานพร้อมกัน (ไม่รอกัน)
+  const [{ data }, winRes] = await Promise.all([
+    supabase
+      .from('leave_requests')
+      .select('*, leave_types(name, code)')
+      .in('employee_id', ctx.employees.map((e) => e.id))
+      .order('submitted_at', { ascending: false })
+      .limit(30),
+    first
+      ? supabase.rpc('get_submit_window', { p_company: first.company_id })
+      : Promise.resolve({ data: null }),
+  ]);
   const rows = (data ?? []) as LeaveRow[];
 
   // เวลา cut-off จากฐานข้อมูล (บริษัทแรกของพนักงาน)
   let cutoff = '10:00';
   let open = true;
-  const first = ctx.employees[0];
-  if (first) {
-    const { data: win } = await supabase.rpc('get_submit_window', { p_company: first.company_id });
-    if (win) {
-      cutoff = win.cutoff;
-      open = thaiParts(win.server_epoch_ms).time <= cutoff;
-    }
+  const win = winRes.data as { cutoff: string; server_epoch_ms: number } | null;
+  if (win) {
+    cutoff = win.cutoff;
+    open = thaiParts(win.server_epoch_ms).time <= cutoff;
   }
 
   const pending = rows.filter((r) => r.status === 'submitted').length;
@@ -51,7 +80,7 @@ async function EmployeeHome({ hello, submitted }: { hello: string; submitted: bo
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
-        <h1 className="text-3xl font-bold text-brand-600 sm:text-4xl">{hello}</h1>
+        <h1 className="text-base font-bold text-brand-600 sm:text-lg">{hello}</h1>
         <Link href="/leave/new" className="btn-primary !px-7 !py-3.5 text-base">
           + ยื่นใบลา
         </Link>
@@ -174,7 +203,7 @@ async function AdminHome({ hello, today }: { hello: string; today: string }) {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
-        <h1 className="text-3xl font-bold text-brand-600 sm:text-4xl">{hello}</h1>
+        <h1 className="text-base font-bold text-brand-600 sm:text-lg">{hello}</h1>
         <Link href="/admin/reports" className="btn-primary !px-7 !py-3.5 text-base">
           รายงานประจำเดือน
         </Link>

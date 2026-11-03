@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { requireAdmin } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
 import { formatPhone } from '@/lib/phone';
@@ -18,7 +19,7 @@ export default async function EmployeesPage({ searchParams }: { searchParams: { 
     .select('id, employee_code, full_name, department, phone_number, status, company_id, companies(company_name)')
     .order('company_id')
     .order('employee_code')
-    .limit(500);
+    .limit(100);
   if (searchParams.company) q = q.eq('company_id', searchParams.company);
   if (searchParams.q) {
     const t = searchParams.q.replace(/[%,()]/g, '').trim();
@@ -30,7 +31,12 @@ export default async function EmployeesPage({ searchParams }: { searchParams: { 
 
   return (
     <div className="space-y-5">
-      <h1 className="text-2xl font-bold text-brand-600">พนักงาน</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold text-brand-600">พนักงาน</h1>
+        <Link href="/admin/employees/import" className="btn-primary">
+          ⬆ นำเข้าจาก Excel/CSV
+        </Link>
+      </div>
 
       <section className="card">
         <h2 className="card-title">เพิ่มพนักงาน</h2>

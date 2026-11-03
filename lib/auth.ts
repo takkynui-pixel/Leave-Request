@@ -5,6 +5,7 @@ import type { EmployeeRef } from '@/lib/types';
 
 export interface Ctx {
   userId: string;
+  email: string;
   displayName: string;
   isAdmin: boolean;
   isSuper: boolean;
@@ -15,9 +16,11 @@ export interface Ctx {
 
 export const getContext = cache(async (): Promise<Ctx> => {
   const supabase = createClient();
+  // middleware ตรวจ/รีเฟรช session ด้วย getUser() ทุกคำขอแล้ว — ที่นี่อ่านจาก cookie ได้เลย (เร็วกว่า ไม่ต้องเรียกเครือข่ายซ้ำ)
   const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    data: { session },
+  } = await supabase.auth.getSession();
+  const user = session?.user;
   if (!user) redirect('/login');
 
   const [empRes, adminRes] = await Promise.all([
@@ -43,7 +46,8 @@ export const getContext = cache(async (): Promise<Ctx> => {
 
   return {
     userId: user.id,
-    displayName: admins[0]?.full_name ?? employees[0]?.full_name ?? user.email ?? 'ผู้ใช้',
+    email: user.email ?? '',
+    displayName: admins[0]?.full_name ?? employees[0]?.full_name ?? user.email?.split('@')[0] ?? 'ผู้ใช้',
     isAdmin: admins.length > 0,
     isSuper: admins.some((a) => a.role === 'super_admin'),
     adminCompanyIds: admins.map((a) => a.company_id).filter(Boolean) as string[],

@@ -18,7 +18,7 @@ const config: Config = {
         ink: '#1b2750',
       },
       fontFamily: {
-        sans: ['Prompt', 'Noto Sans Thai', 'system-ui', 'sans-serif'],
+        sans: ['var(--font-prompt)', 'Prompt', 'Noto Sans Thai', 'system-ui', 'sans-serif'],
       },
       boxShadow: {
         soft: '0 1px 2px rgba(27,39,80,.04), 0 8px 24px rgba(27,39,80,.05)',
