@@ -104,14 +104,19 @@ export default async function EmployeesPage({ searchParams }: { searchParams: { 
                     <td>
                       <ResetPinForm employeeId={e.id} />
                     </td>
-                    <td className="text-right">
-                      <form action={toggleEmployee}>
-                        <input type="hidden" name="id" value={e.id} />
-                        <input type="hidden" name="next" value={active ? 'inactive' : 'active'} />
-                        <button className={`${active ? 'btn-danger' : 'btn-success'} btn-sm`} type="submit">
-                          {active ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
-                        </button>
-                      </form>
+                    <td>
+                      <div className="flex items-center justify-end gap-2">
+                        <Link href={`/admin/employees/${e.id}`} className="btn-outline btn-sm">
+                          ✎ แก้ไข
+                        </Link>
+                        <form action={toggleEmployee}>
+                          <input type="hidden" name="id" value={e.id} />
+                          <input type="hidden" name="next" value={active ? 'inactive' : 'active'} />
+                          <button className={`${active ? 'btn-danger' : 'btn-success'} btn-sm`} type="submit">
+                            {active ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
+                          </button>
+                        </form>
+                      </div>
                     </td>
                   </tr>
                 );

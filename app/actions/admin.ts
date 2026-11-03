@@ -1,5 +1,6 @@
 'use server';
 
+import { randomInt } from 'crypto';
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
@@ -180,6 +181,118 @@ export async function createAdmin(_prev: FormState, fd: FormData): Promise<FormS
     }
     revalidatePath('/admin/settings');
     return { ok: `เพิ่มแอดมิน ${full_name} แล้ว (เข้าสู่ระบบด้วยอีเมล ${email})` };
+  } catch (e: any) {
+    return { error: e.message ?? 'เกิดข้อผิดพลาด' };
+  }
+}
+
+// ---------- แก้ไขข้อมูลพนักงาน ----------
+export async function updateEmployee(_prev: FormState, fd: FormData): Promise<FormState> {
+  try {
+    const id = String(fd.get('id') ?? '');
+    const company_id = String(fd.get('company_id') ?? '');
+    const employee_code = String(fd.get('employee_code') ?? '').trim();
+    const full_name = String(fd.get('full_name') ?? '').trim();
+    const department = String(fd.get('department') ?? '').trim() || null;
+    let phone = normalizePhone(String(fd.get('phone') ?? ''));
+    if (/^[689]\d{8}$/.test(phone)) phone = '0' + phone;
+
+    if (!id || !company_id || !employee_code || !full_name) return { error: 'กรุณากรอกข้อมูลให้ครบ' };
+    if (!isValidPhone(phone)) return { error: 'เบอร์โทรไม่ถูกต้อง (เช่น 0812345678)' };
+
+    const admin = createAdminClient();
+    const { data: emp } = await admin.from('employees').select('*').eq('id', id).single();
+    if (!emp) return { error: 'ไม่พบพนักงาน' };
+    await assertAdminOf(emp.company_id);
+
+    // ย้ายบริษัท: ต้องมีสิทธิ์ทั้งสองบริษัท และต้องไม่มีประวัติการลา (ประวัติผูกกับบริษัทเดิม)
+    if (company_id !== emp.company_id) {
+      await assertAdminOf(company_id);
+      const { count } = await admin
+        .from('leave_requests')
+        .select('id', { count: 'exact', head: true })
+        .eq('employee_id', id);
+      if (count) {
+        return {
+          error:
+            'พนักงานนี้มีประวัติการลาแล้ว จึงย้ายบริษัทไม่ได้ — ให้ปิดใช้งานรายการเดิม แล้วเพิ่มพนักงานใหม่ในบริษัทใหม่',
+        };
+      }
+    }
+
+    // กันรหัส/เบอร์ซ้ำในบริษัทปลายทาง (ตรวจก่อนแตะบัญชีเข้าสู่ระบบ)
+    const { data: dup } = await admin
+      .from('employees')
+      .select('id, employee_code, phone_number')
+      .eq('company_id', company_id)
+      .neq('id', id)
+      .or(`employee_code.eq.${employee_code.replace(/[,()]/g, '')},phone_number.eq.${phone}`)
+      .limit(1);
+    if (dup && dup.length) {
+      return {
+        error: dup[0].employee_code === employee_code ? 'รหัสพนักงานนี้มีอยู่ในบริษัทนี้แล้ว' : 'เบอร์โทรนี้มีอยู่ในบริษัทนี้แล้ว',
+      };
+    }
+
+    // เปลี่ยนเบอร์ = เปลี่ยนชื่อผู้ใช้ที่ใช้ล็อกอิน
+    let userId: string | null = emp.user_id;
+    let note = '';
+    if (phone !== emp.phone_number) {
+      const { data: others } = emp.user_id
+        ? await admin.from('employees').select('id').eq('user_id', emp.user_id).neq('id', id).limit(1)
+        : { data: [] as { id: string }[] };
+      const shared = !!others?.length;
+
+      const { data: target } = await admin
+        .from('employees')
+        .select('user_id')
+        .eq('phone_number', phone)
+        .not('user_id', 'is', null)
+        .limit(1)
+        .maybeSingle();
+
+      if (target?.user_id) {
+        userId = target.user_id; // เบอร์ใหม่มีบัญชีอยู่แล้ว (เช่น ทำงานหลายบริษัท)
+        note = ' (เบอร์ใหม่มีบัญชีอยู่แล้ว ใช้ PIN ของบัญชีนั้น)';
+      } else if (emp.user_id && !shared) {
+        const { error } = await admin.auth.admin.updateUserById(emp.user_id, {
+          email: phoneToEmail(phone),
+          email_confirm: true,
+        });
+        if (error) return { error: 'เปลี่ยนเบอร์เข้าสู่ระบบไม่สำเร็จ: ' + error.message };
+        note = ' (PIN เดิมยังใช้ได้ แต่ต้องเข้าสู่ระบบด้วยเบอร์ใหม่)';
+      } else {
+        const pin = String(randomInt(0, 1_000_000)).padStart(6, '0');
+        const { data, error } = await admin.auth.admin.createUser({
+          email: phoneToEmail(phone),
+          password: pin,
+          email_confirm: true,
+          user_metadata: { must_change_pin: true },
+        });
+        if (error || !data.user) return { error: 'สร้างบัญชีสำหรับเบอร์ใหม่ไม่สำเร็จ: ' + (error?.message ?? 'unknown') };
+        userId = data.user.id;
+        note = ` — PIN เริ่มต้นของเบอร์ใหม่: ${pin} (บันทึกไว้แจ้งพนักงาน)`;
+      }
+    }
+
+    const { error: upErr } = await admin
+      .from('employees')
+      .update({ company_id, employee_code, full_name, department, phone_number: phone, user_id: userId })
+      .eq('id', id);
+    if (upErr) return { error: upErr.message };
+
+    // ลบบัญชีเก่าที่ไม่มีใครใช้แล้ว (ไม่ลบถ้าเป็นแอดมินหรือยังผูกพนักงานอื่น)
+    if (emp.user_id && userId !== emp.user_id) {
+      const [{ count: empLeft }, { count: admLeft }] = await Promise.all([
+        admin.from('employees').select('id', { count: 'exact', head: true }).eq('user_id', emp.user_id),
+        admin.from('company_admins').select('id', { count: 'exact', head: true }).eq('user_id', emp.user_id),
+      ]);
+      if (!empLeft && !admLeft) await admin.auth.admin.deleteUser(emp.user_id);
+    }
+
+    revalidatePath('/admin/employees');
+    revalidatePath(`/admin/employees/${id}`);
+    return { ok: 'บันทึกการแก้ไขเรียบร้อย' + note };
   } catch (e: any) {
     return { error: e.message ?? 'เกิดข้อผิดพลาด' };
   }
