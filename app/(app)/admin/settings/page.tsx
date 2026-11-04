@@ -22,13 +22,12 @@ export default async function SettingsPage() {
     <div className="space-y-5">
       <h1 className="text-2xl font-bold text-brand-600">ตั้งค่า</h1>
 
-      <section className="card">
-        <h2 className="card-title">กะทำงานและช่วงเวลายื่นลาของวันนี้</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          ใช้ร่วมทุกบริษัท · พนักงานยื่นลา “ของวันนี้” ได้เฉพาะช่วง <b>เปิดรับ–ปิดรับ</b> ของกะที่เลือก (เวลาไทย) ส่วนลาล่วงหน้าวันอื่นยื่นได้ตลอด ·
-          เวลาครึ่งแรก/ครึ่งหลังตั้งให้มีช่วงพักคั่นได้ · เวลาเริ่ม-เลิกงานใช้ตรวจเวลาลารายชั่วโมง · ถ้าเวลาเลิกน้อยกว่าเวลาเริ่ม หมายถึงข้ามเที่ยงคืน (เช่น 00:00 = เที่ยงคืน)
-        </p>
-        <div className="mt-4 space-y-4">
+      <section>
+        <div className="mb-3 px-1">
+          <h2 className="card-title">กะทำงานและเวลายื่นลา</h2>
+          <p className="mt-0.5 text-sm text-slate-500">ใช้ร่วมทุกบริษัท · เวลาแบบ 24 ชั่วโมง (เวลาไทย)</p>
+        </div>
+        <div className="grid gap-5 xl:grid-cols-2">
           {(shifts ?? []).map((sh: any) => (
             <ShiftForm key={sh.id} shift={sh} />
           ))}
