@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server';
 import { formatDateTH, formatDateTimeTH } from '@/lib/time';
 import { formatPhone } from '@/lib/phone';
 import PrintButton from '@/components/PrintButton';
+import { PART_LABEL } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,7 +23,7 @@ export default async function PrintPage({ params }: { params: { id: string } }) 
   const { data } = await supabase
     .from('leave_requests')
     .select(
-      '*, leave_types(code, name), employees(employee_code, full_name, department, phone_number), companies(company_name)',
+      '*, leave_types(code, name), shifts(name), employees(employee_code, full_name, department, phone_number), companies(company_name)',
     )
     .eq('id', params.id)
     .maybeSingle();
@@ -32,6 +33,7 @@ export default async function PrintPage({ params }: { params: { id: string } }) 
   const emp = Array.isArray(r.employees) ? r.employees[0] : r.employees;
   const comp = Array.isArray(r.companies) ? r.companies[0] : r.companies;
   const lt = Array.isArray(r.leave_types) ? r.leave_types[0] : r.leave_types;
+  const shift = Array.isArray(r.shifts) ? r.shifts[0] : r.shifts;
   const approved = r.status === 'approved';
   const rejected = r.status === 'rejected';
 
@@ -90,6 +92,9 @@ export default async function PrintPage({ params }: { params: { id: string } }) 
                 </p>
                 <p>
                   <b>จำนวน:</b> {Number(r.total_days)} วัน {Number(r.total_hours)} ชั่วโมง
+                </p>
+                <p>
+                  <b>กะ:</b> {shift?.name ?? '-'} &nbsp; <b>ช่วงที่ลา:</b> {PART_LABEL[(r.day_part as keyof typeof PART_LABEL) ?? 'full']}
                 </p>
                 <p>
                   <b>เวลา:</b> {r.start_time ? r.start_time.slice(0, 5) : '-'} ถึง {r.end_time ? r.end_time.slice(0, 5) : '-'}

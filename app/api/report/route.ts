@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { fetchReport, summarize, toCsv } from '@/lib/report';
+import { fetchReport, partLabel, summarize, toCsv } from '@/lib/report';
 import { currentMonthTH } from '@/lib/time';
 
 export const dynamic = 'force-dynamic';
@@ -30,13 +30,24 @@ export async function GET(req: NextRequest) {
     const sum = summarize(rows);
     const types = [...new Set(rows.map((r) => r.leave_type))];
     csv = toCsv(
-      ['บริษัท', 'รหัสพนักงาน', 'ชื่อ-สกุล', 'รวม (วัน)', ...types],
-      sum.map((s) => [s.company_name, s.employee_code, s.full_name, s.days, ...types.map((t) => s.byType[t] ?? 0)]),
+      ['บริษัท', 'รหัสพนักงาน', 'ชื่อ-สกุล', 'รวม (วัน)', 'รวมลารายชั่วโมง (ชม.)', ...types],
+      sum.map((s) => [s.company_name, s.employee_code, s.full_name, s.days, s.hours, ...types.map((t) => s.byType[t] ?? 0)]),
     );
   } else {
     csv = toCsv(
-      ['บริษัท', 'รหัสพนักงาน', 'ชื่อ-สกุล', 'วันที่ลา', 'ประเภทการลา', 'เหตุผลการลา'],
-      rows.map((r) => [r.company_name, r.employee_code, r.full_name, r.leave_date, r.leave_type, r.reason]),
+      ['บริษัท', 'รหัสพนักงาน', 'ชื่อ-สกุล', 'วันที่ลา', 'ประเภทการลา', 'เหตุผลการลา', 'กะ', 'ช่วงที่ลา', 'จำนวน (วัน)', 'จำนวน (ชม.)'],
+      rows.map((r) => [
+        r.company_name,
+        r.employee_code,
+        r.full_name,
+        r.leave_date,
+        r.leave_type,
+        r.reason,
+        r.shift_name ?? '',
+        partLabel(r),
+        r.leave_days,
+        r.day_part === 'hours' ? r.total_hours : '',
+      ]),
     );
   }
 

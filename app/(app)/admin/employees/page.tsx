@@ -5,6 +5,7 @@ import { formatPhone } from '@/lib/phone';
 import { toggleEmployee } from '@/app/actions/admin';
 import EmployeeForm from './EmployeeForm';
 import ResetPinForm from './ResetPinForm';
+import AutoSubmitSelect from '@/components/AutoSubmitSelect';
 import type { Company } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -50,14 +51,14 @@ export default async function EmployeesPage({ searchParams }: { searchParams: { 
         {comps.length > 1 && (
           <div className="min-w-[180px] flex-1">
             <label className="label">บริษัท</label>
-            <select name="company" defaultValue={searchParams.company ?? ''} className="input">
+            <AutoSubmitSelect name="company" defaultValue={searchParams.company ?? ''} className="input">
               <option value="">ทุกบริษัท</option>
               {comps.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.company_name}
                 </option>
               ))}
-            </select>
+            </AutoSubmitSelect>
           </div>
         )}
         <div className="min-w-[200px] flex-1">

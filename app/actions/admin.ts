@@ -138,21 +138,36 @@ export async function toggleEmployee(fd: FormData) {
 }
 
 // ---------- ตั้งค่า (Super Admin) ----------
-export async function updateCutoff(fd: FormData) {
+export async function updateShift(_prev: FormState, fd: FormData): Promise<FormState> {
   const id = String(fd.get('id') ?? '');
-  const time = String(fd.get('time') ?? '');
-  if (!id || !/^\d{2}:\d{2}$/.test(time)) return;
+  const name = String(fd.get('name') ?? '').trim();
+  const t = (k: string) => String(fd.get(k) ?? '');
+  const start = t('start'), end = t('end'), open = t('open'), close = t('close');
+  const hm = /^\d{2}:\d{2}$/;
+  if (!id || !name) return { error: 'กรุณากรอกชื่อกะ' };
+  if (![start, end, open, close].every((v) => hm.test(v))) return { error: 'รูปแบบเวลาไม่ถูกต้อง' };
+  if (open > close) return { error: 'เวลาเปิดรับต้องไม่เกินเวลาปิดรับ (ช่วงยื่นลาต้องอยู่ภายในวันเดียวกัน)' };
+  if (start === end) return { error: 'เวลาเริ่มและเลิกงานต้องไม่เท่ากัน' };
+
   const supabase = createClient();
-  await supabase.from('companies').update({ leave_cutoff_time: time }).eq('id', id); // RLS: super_admin เท่านั้น
+  const { data, error } = await supabase
+    .from('shifts')
+    .update({ name, start_time: start, end_time: end, open_time: open, close_time: close }) // RLS: super_admin เท่านั้น
+    .eq('id', id)
+    .select('id');
+  if (error) return { error: error.message };
+  if (!data?.length) return { error: 'ไม่มีสิทธิ์แก้ไข (เฉพาะ Super Admin)' };
   revalidatePath('/admin/settings');
+  revalidatePath('/');
+  revalidatePath('/leave/new');
+  return { ok: 'บันทึกแล้ว' };
 }
 
 export async function createCompany(_prev: FormState, fd: FormData): Promise<FormState> {
   const name = String(fd.get('company_name') ?? '').trim();
-  const time = String(fd.get('time') ?? '10:00');
   if (!name) return { error: 'กรุณากรอกชื่อบริษัท' };
   const supabase = createClient();
-  const { error } = await supabase.from('companies').insert({ company_name: name, leave_cutoff_time: time });
+  const { error } = await supabase.from('companies').insert({ company_name: name });
   if (error) return { error: error.message.includes('duplicate') ? 'มีชื่อบริษัทนี้อยู่แล้ว' : error.message };
   revalidatePath('/admin/settings');
   return { ok: `เพิ่มบริษัท ${name} แล้ว` };

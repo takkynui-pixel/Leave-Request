@@ -18,10 +18,6 @@ export default function CompanyForm() {
         <label className="label">เพิ่มบริษัทลูกค้า</label>
         <input name="company_name" className="input" placeholder="ชื่อบริษัท" required />
       </div>
-      <div>
-        <label className="label">เวลาปิดรับ</label>
-        <input type="time" name="time" defaultValue="10:00" className="input" required />
-      </div>
       <SubmitButton>เพิ่มบริษัท</SubmitButton>
       {state?.error && <p className="alert-error w-full">{state.error}</p>}
       {state?.ok && <p className="alert-ok w-full">{state.ok}</p>}

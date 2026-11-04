@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { formatDateTH, greeting, thaiParts } from '@/lib/time';
 import StatusBadge from '@/components/StatusBadge';
 import CancelButton from '@/components/CancelButton';
-import type { LeaveRow } from '@/lib/types';
+import { leaveAmount, partText, type LeaveRow, type Shift } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -49,30 +49,27 @@ async function EmployeeHome({ hello, submitted }: { hello: string; submitted: bo
   const ctx = await getContext();
   const supabase = createClient();
 
-  const first = ctx.employees[0];
+  const todayTH = thaiParts(Date.now()).date;
 
   // สองคำขอทำงานพร้อมกัน (ไม่รอกัน)
   const [{ data }, winRes] = await Promise.all([
     supabase
       .from('leave_requests')
-      .select('*, leave_types(name, code)')
+      .select('*, leave_types(name, code), shifts(name)')
       .in('employee_id', ctx.employees.map((e) => e.id))
       .order('submitted_at', { ascending: false })
       .limit(30),
-    first
-      ? supabase.rpc('get_submit_window', { p_company: first.company_id })
-      : Promise.resolve({ data: null }),
+    supabase.rpc('get_shift_windows'),
   ]);
   const rows = (data ?? []) as LeaveRow[];
 
-  // เวลา cut-off จากฐานข้อมูล (บริษัทแรกของพนักงาน)
-  let cutoff = '10:00';
-  let open = true;
-  const win = winRes.data as { cutoff: string; server_epoch_ms: number } | null;
-  if (win) {
-    cutoff = win.cutoff;
-    open = thaiParts(win.server_epoch_ms).time <= cutoff;
-  }
+  // ช่วงเวลายื่นลาของ "วันนี้" ของแต่ละกะ (เทียบเวลาเซิร์ฟเวอร์)
+  const win = winRes.data as { server_epoch_ms: number; shifts: Shift[] } | null;
+  const nowTime = thaiParts(win?.server_epoch_ms ?? Date.now()).time;
+  const shiftStates = (win?.shifts ?? []).map((sh) => ({
+    ...sh,
+    isOpen: nowTime >= sh.open && nowTime <= sh.close,
+  }));
 
   const pending = rows.filter((r) => r.status === 'submitted').length;
   const approved = rows.filter((r) => r.status === 'approved').length;
@@ -91,11 +88,27 @@ async function EmployeeHome({ hello, submitted }: { hello: string; submitted: bo
       <div className="grid gap-5 lg:grid-cols-3">
         <section className="rounded-[32px] bg-gradient-to-br from-brand-600 to-brand-400 p-7 text-white shadow-xl shadow-blue-600/20">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white text-xl">🗓️</div>
-          <p className="mt-6 text-lg font-semibold">ยื่นลาวันนี้ได้ถึง</p>
-          <p className="text-6xl font-bold leading-tight">{cutoff} น.</p>
-          <p className="mt-3 text-sm text-white/90">
-            {open ? 'ตอนนี้ยังยื่นลาสำหรับวันนี้ได้' : 'เกินเวลาแล้ว — ติดต่อ Admin หรือหัวหน้างาน'}
-          </p>
+          <p className="mt-5 text-lg font-semibold">เวลายื่นลาของวันนี้</p>
+          <ul className="mt-3 space-y-2.5">
+            {shiftStates.map((sh) => (
+              <li key={sh.id} className="flex items-center justify-between gap-3 rounded-2xl bg-white/15 px-4 py-3">
+                <div>
+                  <p className="font-semibold">{sh.name}</p>
+                  <p className="text-2xl font-bold leading-tight">
+                    {sh.open}–{sh.close} น.
+                  </p>
+                </div>
+                <span
+                  className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-semibold ${
+                    sh.isOpen ? 'bg-white text-brand-700' : 'bg-white/25 text-white'
+                  }`}
+                >
+                  {sh.isOpen ? 'เปิดรับอยู่' : 'ปิดอยู่'}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-3 text-sm text-white/90">ลาล่วงหน้าวันอื่น ยื่นได้ตลอดเวลา</p>
         </section>
 
         <section className="card">
@@ -143,14 +156,15 @@ async function EmployeeHome({ hello, submitted }: { hello: string; submitted: bo
             <tbody>
               {rows.map((r) => (
                 <tr key={r.id}>
-                  <td className="font-medium">{r.leave_types?.name}</td>
+                  <td className="font-medium">
+                    {r.leave_types?.name}
+                    <p className="text-xs font-normal text-slate-400">{partText(r)}</p>
+                  </td>
                   <td className="whitespace-nowrap">
                     {formatDateTH(r.start_date)}
                     {r.end_date !== r.start_date && ` – ${formatDateTH(r.end_date)}`}
                   </td>
-                  <td className="whitespace-nowrap">
-                    {Number(r.total_days) > 0 ? `${Number(r.total_days)} วัน` : `${Number(r.total_hours)} ชม.`}
-                  </td>
+                  <td className="whitespace-nowrap">{leaveAmount(r)}</td>
                   <td className="max-w-[260px] text-slate-600">
                     {r.reason}
                     {r.admin_remark && <p className="mt-1 text-xs text-slate-400">หมายเหตุ: {r.admin_remark}</p>}
@@ -159,12 +173,15 @@ async function EmployeeHome({ hello, submitted }: { hello: string; submitted: bo
                     <StatusBadge status={r.status} />
                   </td>
                   <td className="whitespace-nowrap text-right">
-                    {r.status === 'approved' && (
-                      <Link href={`/print/${r.id}`} target="_blank" className="btn-outline btn-sm">
-                        พิมพ์ใบลา
-                      </Link>
-                    )}
-                    {r.status === 'submitted' && <CancelButton id={r.id} />}
+                    <div className="flex items-start justify-end gap-2">
+                      {r.status === 'approved' && (
+                        <Link href={`/print/${r.id}`} target="_blank" className="btn-outline btn-sm">
+                          พิมพ์ใบลา
+                        </Link>
+                      )}
+                      {r.status === 'submitted' && <CancelButton id={r.id} />}
+                      {r.status === 'approved' && r.start_date >= todayTH && <CancelButton id={r.id} approved />}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -191,7 +208,7 @@ async function AdminHome({ hello, today }: { hello: string; today: string }) {
     supabase.from('leave_requests').select('id', { count: 'exact', head: true }).eq('status', 'submitted'),
     supabase
       .from('leave_requests')
-      .select('*, leave_types(name, code), employees(employee_code, full_name), companies(company_name)')
+      .select('*, leave_types(name, code), shifts(name), employees(employee_code, full_name), companies(company_name)')
       .in('status', ['submitted', 'approved'])
       .lte('start_date', today)
       .gte('end_date', today)
@@ -253,7 +270,10 @@ async function AdminHome({ hello, today }: { hello: string; today: string }) {
                   <td>{r.companies?.company_name}</td>
                   <td className="font-medium">{r.employees?.employee_code}</td>
                   <td>{r.employees?.full_name}</td>
-                  <td>{r.leave_types?.name}</td>
+                  <td>
+                    {r.leave_types?.name}
+                    <p className="text-xs text-slate-400">{partText(r)}</p>
+                  </td>
                   <td className="max-w-[260px] text-slate-600">{r.reason}</td>
                   <td>
                     <StatusBadge status={r.status} />

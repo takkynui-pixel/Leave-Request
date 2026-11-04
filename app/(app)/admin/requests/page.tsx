@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { formatDateTH, formatDateTimeTH } from '@/lib/time';
 import StatusBadge from '@/components/StatusBadge';
 import ReviewActions from './ReviewActions';
-import type { Company, LeaveRow } from '@/lib/types';
+import { leaveAmount, partText, type Company, type LeaveRow } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +23,7 @@ export default async function RequestsPage({ searchParams }: { searchParams: SP 
 
   let q = supabase
     .from('leave_requests')
-    .select('*, leave_types(name, code), employees(employee_code, full_name), companies(company_name)')
+    .select('*, leave_types(name, code), shifts(name), employees(employee_code, full_name), companies(company_name)')
     .order('submitted_at', { ascending: false })
     .limit(200);
   if (searchParams.company) q = q.eq('company_id', searchParams.company);
@@ -116,7 +116,7 @@ export default async function RequestsPage({ searchParams }: { searchParams: SP 
                     {formatDateTH(r.start_date)}
                     {r.end_date !== r.start_date && ` – ${formatDateTH(r.end_date)}`}
                     <p className="text-xs text-slate-400">
-                      {Number(r.total_days) > 0 ? `${Number(r.total_days)} วัน` : `${Number(r.total_hours)} ชม.`}
+                      {leaveAmount(r)} · {partText(r)}
                     </p>
                   </td>
                   <td className="max-w-[240px] text-slate-600">

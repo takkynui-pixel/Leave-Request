@@ -1,6 +1,6 @@
 import { requireAdmin } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
-import { fetchReport, summarize } from '@/lib/report';
+import { fetchReport, partLabel, summarize } from '@/lib/report';
 import { currentMonthTH, formatDateTH, monthLabelTH, monthRange } from '@/lib/time';
 import type { Company } from '@/lib/types';
 
@@ -77,7 +77,7 @@ export default async function ReportsPage({ searchParams }: { searchParams: { co
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="card-title">เดือน{monthLabelTH(month)}</h2>
           <p className="text-sm text-slate-400">
-            {rows.length} วันลา · {summary.length} คน
+            {rows.length} รายการ · {summary.length} คน
           </p>
         </div>
         <div className="table-wrap mt-3">
@@ -88,6 +88,7 @@ export default async function ReportsPage({ searchParams }: { searchParams: { co
                 <th>ชื่อ-สกุล</th>
                 <th>วันที่ลา</th>
                 <th>ประเภท</th>
+                <th>กะ / ช่วงที่ลา</th>
                 <th>เหตุผล</th>
               </tr>
             </thead>
@@ -101,12 +102,19 @@ export default async function ReportsPage({ searchParams }: { searchParams: { co
                   <td>{r.full_name}</td>
                   <td className="whitespace-nowrap">{formatDateTH(r.leave_date)}</td>
                   <td>{r.leave_type}</td>
+                  <td className="whitespace-nowrap text-slate-600">
+                    {r.shift_name}
+                    <p className="text-xs text-slate-400">
+                      {partLabel(r)}
+                      {r.day_part === 'hours' ? ` · ${Number(r.total_hours)} ชม.` : r.day_part === 'full' ? '' : ' · 0.5 วัน'}
+                    </p>
+                  </td>
                   <td className="max-w-[320px] text-slate-600">{r.reason}</td>
                 </tr>
               ))}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="py-10 text-center text-slate-400">
+                  <td colSpan={6} className="py-10 text-center text-slate-400">
                     ไม่มีข้อมูลการลาในเดือนนี้
                   </td>
                 </tr>
@@ -126,7 +134,8 @@ export default async function ReportsPage({ searchParams }: { searchParams: { co
                   <th>รหัสพนักงาน</th>
                   <th>ชื่อ-สกุล</th>
                   <th>รวม (วัน)</th>
-                  <th>แยกตามประเภท</th>
+                  <th>ลารายชั่วโมง (ชม.)</th>
+                  <th>แยกตามประเภท (วัน)</th>
                 </tr>
               </thead>
               <tbody>
@@ -135,6 +144,7 @@ export default async function ReportsPage({ searchParams }: { searchParams: { co
                     <td className="font-medium">{s.employee_code}</td>
                     <td>{s.full_name}</td>
                     <td className="font-semibold">{s.days}</td>
+                    <td>{s.hours || '-'}</td>
                     <td className="text-slate-600">
                       {Object.entries(s.byType)
                         .map(([t, n]) => `${t} ${n}`)

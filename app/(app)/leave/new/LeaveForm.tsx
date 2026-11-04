@@ -4,33 +4,42 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { addDays, formatDateTH, thaiParts } from '@/lib/time';
-import type { EmployeeRef, LeaveType } from '@/lib/types';
-
-export interface CutoffWindow {
-  serverEpochMs: number;
-  cutoff: string; // HH:MM
-}
+import { PART_LABEL, type DayPart, type EmployeeRef, type LeaveType, type Shift } from '@/lib/types';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const ALLOWED = ['image/jpeg', 'image/png', 'application/pdf'];
 
+const toMin = (t: string) => {
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + m;
+};
+const fromMin = (n: number) => {
+  const x = ((n % 1440) + 1440) % 1440;
+  return `${String(Math.floor(x / 60)).padStart(2, '0')}:${String(x % 60).padStart(2, '0')}`;
+};
+/** ความยาวกะเป็นนาที (ข้ามเที่ยงคืนได้) */
+const shiftLen = (s: Shift) => {
+  const d = toMin(s.end) - toMin(s.start);
+  return d > 0 ? d : d + 1440;
+};
+
+const PARTS: DayPart[] = ['full', 'first_half', 'second_half', 'hours'];
+
 export default function LeaveForm({
   employees,
   types,
-  windows,
+  shifts,
+  serverEpochMs,
 }: {
   employees: EmployeeRef[];
   types: LeaveType[];
-  windows: Record<string, CutoffWindow>;
+  shifts: Shift[];
+  serverEpochMs: number;
 }) {
   const router = useRouter();
 
-  const [employeeId, setEmployeeId] = useState(employees[0].id);
-  const emp = employees.find((e) => e.id === employeeId)!;
-  const win = windows[emp.company_id];
-
   // นาฬิกาอ้างอิงเวลาเซิร์ฟเวอร์: offset = เวลาเซิร์ฟเวอร์ - เวลาเครื่องผู้ใช้ ณ ตอนโหลดหน้า
-  const [offset] = useState(() => win.serverEpochMs - Date.now());
+  const [offset] = useState(() => serverEpochMs - Date.now());
   const [tick, setTick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 15000);
@@ -38,11 +47,18 @@ export default function LeaveForm({
   }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const now = useMemo(() => thaiParts(Date.now() + offset), [tick, offset]);
+  const inWindow = (s: Shift) => now.time >= s.open && now.time <= s.close;
 
-  const afterCutoff = now.time > win.cutoff;
+  const [employeeId, setEmployeeId] = useState(employees[0].id);
+  const emp = employees.find((e) => e.id === employeeId)!;
+
+  // เริ่มต้น: เลือกกะที่กำลังเปิดรับอยู่ ถ้าไม่มี → กะแรก และตั้งวันลาเป็นพรุ่งนี้
+  const [shiftId, setShiftId] = useState(() => (shifts.find(inWindow) ?? shifts[0])?.id ?? '');
+  const shift = shifts.find((s) => s.id === shiftId);
   const [typeId, setTypeId] = useState('');
-  const [start, setStart] = useState(afterCutoff ? addDays(now.date, 1) : now.date);
-  const [end, setEnd] = useState(afterCutoff ? addDays(now.date, 1) : now.date);
+  const [part, setPart] = useState<DayPart>('full');
+  const [start, setStart] = useState(() => (shifts.some(inWindow) ? now.date : addDays(now.date, 1)));
+  const [end, setEnd] = useState(start);
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
   const [reason, setReason] = useState('');
@@ -53,23 +69,46 @@ export default function LeaveForm({
   const type = types.find((t) => t.id === typeId);
   const needFile = !!type?.requires_attachment;
   const backdated = start < now.date;
-  const pastCutoff = start === now.date && afterCutoff;
   const badRange = end < start;
-  const sameDay = start === end;
+  const crossesMidnight = shift ? toMin(shift.end) <= toMin(shift.start) : false;
+
+  // ครึ่งกะ = ตัดครึ่งเวลากะ
+  const half = shift ? shiftLen(shift) / 2 : 0;
+  const firstHalf = shift ? `${shift.start}–${fromMin(toMin(shift.start) + half)}` : '';
+  const secondHalf = shift ? `${fromMin(toMin(shift.start) + half)}–${shift.end}` : '';
+
+  // ลาเป็นชั่วโมง: ต้องอยู่ในช่วงกะ (เวลาหลังเที่ยงคืนของกะดึกนับเป็นวันถัดไป)
+  let hoursErr = '';
+  let hoursValue = 0;
+  if (part === 'hours' && shift) {
+    if (!startTime || !endTime) hoursErr = 'กรุณาระบุเวลาเริ่มและเวลาสิ้นสุด';
+    else if (startTime === endTime) hoursErr = 'เวลาเริ่มและเวลาสิ้นสุดต้องไม่เท่ากัน';
+    else {
+      let s = toMin(startTime) - toMin(shift.start);
+      if (s < 0) s += 1440;
+      const dur = (toMin(endTime) - toMin(startTime) + 1440) % 1440;
+      hoursValue = Math.round((dur / 60) * 10) / 10;
+      if (s + dur > shiftLen(shift)) hoursErr = `เวลาที่ลาต้องอยู่ในช่วง${shift.name} (${shift.start}–${shift.end} น.)`;
+    }
+  }
 
   const days = badRange ? 0 : Math.round((Date.parse(end) - Date.parse(start)) / 86400000) + 1;
+  const amount = part === 'full' ? `${days} วัน` : part === 'hours' ? `${hoursValue} ชั่วโมง` : '0.5 วัน';
 
-  const blocker = backdated
-    ? 'ไม่สามารถแจ้งลาย้อนหลังได้ กรุณาติดต่อ Admin'
-    : pastCutoff
-      ? `เกินกำหนดเวลาส่งแจ้งลาของวันนี้ (${win.cutoff} น.) กรุณาติดต่อ Admin หรือหัวหน้างาน`
-      : badRange
-        ? 'วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่ม'
-        : '';
+  const windowBlock =
+    shift && start === now.date && !inWindow(shift)
+      ? `การลา${shift.name}ของวันนี้ ยื่นได้เฉพาะเวลา ${shift.open}–${shift.close} น. (ตอนนี้ ${now.time} น.) ` +
+        'กรุณาติดต่อ Admin หรือหัวหน้างาน หรือเลือกวันลาเป็นวันถัดไป'
+      : '';
+  const blocker = backdated ? 'ไม่สามารถแจ้งลาย้อนหลังได้ กรุณาติดต่อ Admin' : windowBlock || (badRange ? 'วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่ม' : '');
 
   const canSubmit =
-    !busy && !blocker && !!typeId && reason.trim().length > 0 && (!needFile || !!file) &&
-    (startTime === '') === (endTime === '');
+    !busy && !blocker && !!typeId && !!shiftId && reason.trim().length > 0 && (!needFile || !!file) && !hoursErr;
+
+  function pickPart(p: DayPart) {
+    setPart(p);
+    if (p !== 'full') setEnd(start); // ครึ่งกะ/ชั่วโมง = วันเดียว
+  }
 
   function pickFile(f: File | null) {
     setError('');
@@ -103,10 +142,12 @@ export default function LeaveForm({
     const { error: insErr } = await supabase.from('leave_requests').insert({
       employee_id: employeeId,
       leave_type_id: typeId,
+      shift_id: shiftId,
+      day_part: part,
       start_date: start,
-      end_date: end,
-      start_time: sameDay && startTime ? startTime : null,
-      end_time: sameDay && endTime ? endTime : null,
+      end_date: part === 'full' ? end : start,
+      start_time: part === 'hours' ? startTime : null,
+      end_time: part === 'hours' ? endTime : null,
       reason: reason.trim(),
       attachment_path: path,
     });
@@ -114,7 +155,7 @@ export default function LeaveForm({
     if (insErr) {
       if (path) await supabase.storage.from('leave-documents').remove([path]);
       setBusy(false);
-      return setError(insErr.message); // ข้อความภาษาไทยจาก trigger (เช่น เกินเวลา cut-off)
+      return setError(insErr.message); // ข้อความภาษาไทยจาก trigger
     }
     router.push('/?submitted=1');
     router.refresh();
@@ -123,11 +164,24 @@ export default function LeaveForm({
   return (
     <form onSubmit={submit} className="space-y-5">
       <section className="card space-y-5">
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-brand-50 px-4 py-3 text-sm">
-          <span className="font-medium text-brand-700">ยื่นลาของวันนี้ได้ถึง {win.cutoff} น.</span>
-          <span className="text-slate-500">
-            เวลาปัจจุบัน {now.time} น. ({formatDateTH(now.date)})
-          </span>
+        <div className="rounded-2xl bg-brand-50 px-4 py-3 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-medium text-brand-700">ลาของ “วันนี้” ยื่นได้เฉพาะช่วงเวลาของแต่ละกะ</span>
+            <span className="text-slate-500">
+              ตอนนี้ {now.time} น. ({formatDateTH(now.date)})
+            </span>
+          </div>
+          <ul className="mt-1.5 space-y-0.5 text-slate-600">
+            {shifts.map((s) => (
+              <li key={s.id}>
+                {s.name}: {s.open}–{s.close} น.{' '}
+                <span className={inWindow(s) ? 'font-medium text-emerald-600' : 'text-slate-400'}>
+                  ({inWindow(s) ? 'เปิดรับอยู่' : 'ปิดอยู่'})
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-xs text-slate-400">ลาล่วงหน้าวันอื่นยื่นได้ตลอดเวลา</p>
         </div>
 
         {employees.length > 1 && (
@@ -159,6 +213,38 @@ export default function LeaveForm({
         </div>
 
         <div>
+          <label className="label">
+            กะที่ลา <span className="text-rose-500">*</span>
+          </label>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {shifts.map((s) => (
+              <label
+                key={s.id}
+                className={`flex cursor-pointer items-center gap-3 rounded-2xl border px-4 py-3 text-sm transition ${
+                  shiftId === s.id
+                    ? 'border-brand-500 bg-brand-50 font-medium text-brand-700 ring-4 ring-brand-100'
+                    : 'border-slate-200 bg-white hover:bg-slate-50'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="shift"
+                  className="accent-brand-600"
+                  checked={shiftId === s.id}
+                  onChange={() => setShiftId(s.id)}
+                />
+                <span className="flex-1">
+                  {s.name}
+                  <span className="ml-2 font-normal text-slate-400">
+                    {s.start}–{s.end} น.
+                  </span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div>
           <label className="label">ประเภทการลา</label>
           <div className="grid gap-2 sm:grid-cols-2">
             {types.map((t) => (
@@ -184,9 +270,32 @@ export default function LeaveForm({
           </div>
         </div>
 
+        <div>
+          <label className="label">ช่วงที่ลา</label>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {PARTS.map((p) => (
+              <label
+                key={p}
+                className={`flex cursor-pointer items-center gap-3 rounded-2xl border px-4 py-3 text-sm transition ${
+                  part === p
+                    ? 'border-brand-500 bg-brand-50 font-medium text-brand-700 ring-4 ring-brand-100'
+                    : 'border-slate-200 bg-white hover:bg-slate-50'
+                }`}
+              >
+                <input type="radio" name="part" className="accent-brand-600" checked={part === p} onChange={() => pickPart(p)} />
+                <span className="flex-1">
+                  {PART_LABEL[p]}
+                  {p === 'first_half' && <span className="ml-2 font-normal text-slate-400">{firstHalf}</span>}
+                  {p === 'second_half' && <span className="ml-2 font-normal text-slate-400">{secondHalf}</span>}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="label">ตั้งแต่วันที่</label>
+            <label className="label">{part === 'full' ? 'ตั้งแต่วันที่' : 'วันที่ลา'}</label>
             <input
               type="date"
               className="input"
@@ -194,33 +303,45 @@ export default function LeaveForm({
               min={now.date}
               onChange={(e) => {
                 setStart(e.target.value);
-                if (end < e.target.value) setEnd(e.target.value);
+                if (part !== 'full' || end < e.target.value) setEnd(e.target.value);
               }}
               required
             />
           </div>
-          <div>
-            <label className="label">ถึงวันที่</label>
-            <input type="date" className="input" value={end} min={start} onChange={(e) => setEnd(e.target.value)} required />
-          </div>
+          {part === 'full' && (
+            <div>
+              <label className="label">ถึงวันที่</label>
+              <input type="date" className="input" value={end} min={start} onChange={(e) => setEnd(e.target.value)} required />
+            </div>
+          )}
         </div>
 
-        {sameDay && (
+        {crossesMidnight && (
+          <p className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            {shift?.name} เริ่ม {shift?.start} น. และต่อเนื่องถึง {shift?.end} น. ของวันถัดไป — <b>ให้เลือก “วันที่เริ่มกะ” เป็นวันที่ลา</b>{' '}
+            (เช่น ลากะดึกที่เริ่มคืนวันที่ 5 ให้เลือกวันที่ 5)
+          </p>
+        )}
+
+        {part === 'hours' && shift && (
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="label">เวลาเริ่ม (ลาเป็นชั่วโมง — ไม่บังคับ)</label>
-              <input type="time" className="input" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+              <label className="label">เวลาเริ่มลา</label>
+              <input type="time" className="input" value={startTime} onChange={(e) => setStartTime(e.target.value)} required />
             </div>
             <div>
               <label className="label">เวลาสิ้นสุด</label>
-              <input type="time" className="input" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+              <input type="time" className="input" value={endTime} onChange={(e) => setEndTime(e.target.value)} required />
             </div>
+            <p className="text-xs text-slate-400 sm:col-span-2">
+              ต้องอยู่ในช่วง{shift.name} ({shift.start}–{shift.end} น.){crossesMidnight && ' ข้ามเที่ยงคืนได้ เช่น 23:00 ถึง 02:00'}
+            </p>
+            {hoursErr && startTime && endTime && <p className="alert-error sm:col-span-2">{hoursErr}</p>}
           </div>
         )}
 
         <p className="text-sm text-slate-500">
-          จำนวนวันลา: <b className="text-ink">{days} วัน</b>
-          {!!startTime && !!endTime && sameDay && ' (คำนวณเป็นชั่วโมงตามเวลาที่ระบุ)'}
+          จำนวนที่ลา: <b className="text-ink">{amount}</b>
         </p>
 
         <div>
@@ -237,7 +358,7 @@ export default function LeaveForm({
           />
         </div>
 
-        {(needFile || type) && (
+        {type && (
           <div>
             <label className="label">
               แนบเอกสาร / ใบรับรองแพทย์ {needFile ? <span className="text-rose-500">* จำเป็น</span> : '(ถ้ามี)'}

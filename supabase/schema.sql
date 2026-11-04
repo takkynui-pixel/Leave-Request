@@ -85,6 +85,32 @@ create index if not exists leave_company_date_idx  on public.leave_requests(comp
 create index if not exists leave_employee_idx      on public.leave_requests(employee_id, start_date);
 create index if not exists leave_status_idx        on public.leave_requests(status);
 
+-- กะทำงาน (ใช้ร่วมทุกบริษัท) — แก้เวลาได้ที่หน้าแอดมิน "ตั้งค่า"
+--   start/end      = เวลาเริ่ม-เลิกงานของกะ (end <= start หมายถึงข้ามเที่ยงคืน เช่น 20:00-05:00)
+--   open/close     = ช่วงเวลาที่ยื่นลา "ของวันนี้" ได้ (ยื่นล่วงหน้าวันอื่นได้ตลอดเวลา)
+create table if not exists public.shifts (
+  id         uuid primary key default gen_random_uuid(),
+  code       text not null unique,
+  name       text not null,
+  start_time time not null,
+  end_time   time not null,
+  open_time  time not null default '00:00',
+  close_time time not null default '23:59',
+  sort_order int  not null default 0,
+  constraint shifts_window_ok check (open_time <= close_time)
+);
+
+alter table public.leave_requests add column if not exists shift_id uuid references public.shifts(id);
+alter table public.leave_requests add column if not exists day_part text not null default 'full';
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'leave_day_part_ok') then
+    alter table public.leave_requests
+      add constraint leave_day_part_ok check (day_part in ('full','first_half','second_half','hours'));
+  end if;
+end $$;
+-- ใบลาเดิมที่ระบุเวลา = ลาเป็นชั่วโมง
+update public.leave_requests set day_part = 'hours' where start_time is not null and day_part = 'full';
+
 -- ---------------------------------------------------------------------
 -- 2) HELPER FUNCTIONS (security definer — ใช้ใน RLS เพื่อเลี่ยง recursion)
 -- ---------------------------------------------------------------------
@@ -118,6 +144,34 @@ returns boolean language sql stable security definer set search_path = public as
   select exists (select 1 from public.employees where company_id = cid and user_id = auth.uid());
 $$;
 
+-- ช่วงเวลาจริง (timestamp) ของการลาบางส่วน โดยยึด "วันที่เริ่มกะ" เป็นวันที่ลา
+-- เวลาที่น้อยกว่าเวลาเริ่มกะ (เช่น 01:00 ของกะดึก) = หลังเที่ยงคืน นับเป็นวันถัดไป
+create or replace function public.leave_span(d date, sh uuid, st time, et time)
+returns tsrange language plpgsql stable set search_path = public as $$
+declare s time; a timestamp; b timestamp;
+begin
+  select start_time into s from public.shifts where id = sh;
+  a := d + st;
+  if s is not null and st < s then a := a + interval '1 day'; end if;
+  b := a + case when et > st then et - st else (et - st) + interval '24 hours' end;
+  return tsrange(a, b, '[)');
+end;
+$$;
+
+-- เวลาเซิร์ฟเวอร์ + กะทั้งหมด (Frontend ใช้เทียบ ไม่ใช้เวลาเครื่องพนักงาน)
+create or replace function public.get_shift_windows()
+returns json language sql volatile security definer set search_path = public as $$
+  select json_build_object(
+    'server_epoch_ms', (extract(epoch from clock_timestamp()) * 1000)::bigint,
+    'shifts', coalesce((
+      select json_agg(json_build_object(
+        'id', id, 'code', code, 'name', name,
+        'start', to_char(start_time, 'HH24:MI'), 'end', to_char(end_time, 'HH24:MI'),
+        'open',  to_char(open_time,  'HH24:MI'), 'close', to_char(close_time, 'HH24:MI')
+      ) order by sort_order) from public.shifts), '[]'::json)
+  );
+$$;
+
 -- เวลาเซิร์ฟเวอร์ + เวลา cut-off ของบริษัท (Frontend ใช้เทียบ ไม่ใช้เวลาเครื่องพนักงาน)
 create or replace function public.get_submit_window(p_company uuid)
 returns json language plpgsql security definer set search_path = public as $$
@@ -141,17 +195,24 @@ $$;
 create or replace function public.leave_before_insert()
 returns trigger language plpgsql security definer set search_path = public as $$
 declare
-  emp     public.employees%rowtype;
-  lt      public.leave_types%rowtype;
-  cutoff  time;
-  now_th  timestamp := (now() at time zone 'Asia/Bangkok');
-  is_adm  boolean;
+  emp       public.employees%rowtype;
+  lt        public.leave_types%rowtype;
+  sh        public.shifts%rowtype;
+  now_th    timestamp := (now() at time zone 'Asia/Bangkok');
+  is_adm    boolean;
+  shift_len interval;
+  n_span    tsrange;
+  sh_span   tsrange;
 begin
   select * into emp from public.employees where id = new.employee_id;
   if not found then raise exception 'ไม่พบข้อมูลพนักงาน'; end if;
 
   select * into lt from public.leave_types where id = new.leave_type_id;
   if not found then raise exception 'ไม่พบประเภทการลา'; end if;
+
+  if new.shift_id is null then raise exception 'กรุณาเลือกกะ'; end if;
+  select * into sh from public.shifts where id = new.shift_id;
+  if not found then raise exception 'ไม่พบกะที่เลือก'; end if;
 
   -- auth.uid() เป็น null = service_role / SQL editor (ระบบหลังบ้าน) ถือว่าเป็นแอดมิน
   is_adm := auth.uid() is null or public.is_admin_of_company(emp.company_id);
@@ -168,15 +229,14 @@ begin
     new.reviewed_at      := null;
     new.admin_remark     := null;
 
-    select coalesce(c.leave_cutoff_time, time '10:00') into cutoff
-      from public.companies c where c.id = emp.company_id;
-
     if new.start_date < now_th::date then
       raise exception 'ไม่สามารถแจ้งลาย้อนหลังได้ กรุณาติดต่อ Admin';
     end if;
-    if new.start_date = now_th::date and now_th::time > cutoff then
-      raise exception 'เกินเวลา % น. สำหรับการแจ้งลาของวันนี้ กรุณาติดต่อ Admin หรือหัวหน้างาน',
-        to_char(cutoff, 'HH24:MI');
+    -- ลาของ "วันนี้" ยื่นได้เฉพาะช่วงเวลาเปิด-ปิดของกะนั้น (ล่วงหน้าวันอื่นยื่นได้ตลอด)
+    if new.start_date = now_th::date
+       and (now_th::time < sh.open_time or now_th::time > sh.close_time) then
+      raise exception 'การลา%ของวันนี้ ยื่นได้เฉพาะเวลา % – % น. กรุณาติดต่อ Admin หรือหัวหน้างาน',
+        sh.name, to_char(sh.open_time, 'HH24:MI'), to_char(sh.close_time, 'HH24:MI');
     end if;
   end if;
 
@@ -188,30 +248,66 @@ begin
     raise exception 'ไฟล์แนบไม่ถูกต้อง';
   end if;
 
-  if (new.start_time is null) <> (new.end_time is null) then
-    raise exception 'กรุณาระบุเวลาเริ่มและเวลาสิ้นสุดให้ครบ';
-  end if;
+  -- ความยาวของกะ (ข้ามเที่ยงคืนได้)
+  shift_len := case when sh.end_time > sh.start_time then sh.end_time - sh.start_time
+                    else (sh.end_time - sh.start_time) + interval '24 hours' end;
 
-  -- คำนวณจำนวนวัน/ชั่วโมง
-  if new.start_time is not null and new.start_date = new.end_date then
-    if new.end_time <= new.start_time then raise exception 'เวลาสิ้นสุดต้องหลังเวลาเริ่ม'; end if;
-    new.total_days  := 0;
-    new.total_hours := round((extract(epoch from (new.end_time - new.start_time)) / 3600.0)::numeric, 1);
-  else
+  -- รูปแบบการลา: เต็มกะ / ครึ่งแรก / ครึ่งหลัง / ระบุชั่วโมง
+  if new.day_part = 'full' then
     new.start_time  := null;
     new.end_time    := null;
     new.total_days  := (new.end_date - new.start_date) + 1;
     new.total_hours := 0;
+  elsif new.day_part in ('first_half','second_half','hours') then
+    if new.end_date <> new.start_date then
+      raise exception 'การลาครึ่งกะหรือรายชั่วโมง เลือกได้เฉพาะวันเดียว';
+    end if;
+    if new.day_part = 'first_half' then
+      new.start_time := sh.start_time;
+      new.end_time   := sh.start_time + (shift_len / 2);
+    elsif new.day_part = 'second_half' then
+      new.start_time := sh.start_time + (shift_len / 2);
+      new.end_time   := sh.end_time;
+    else
+      if new.start_time is null or new.end_time is null then
+        raise exception 'กรุณาระบุเวลาเริ่มและเวลาสิ้นสุดของการลา';
+      end if;
+      if new.start_time = new.end_time then raise exception 'เวลาเริ่มและเวลาสิ้นสุดต้องไม่เท่ากัน'; end if;
+    end if;
+
+    n_span  := public.leave_span(new.start_date, new.shift_id, new.start_time, new.end_time);
+    sh_span := tsrange(new.start_date + sh.start_time, new.start_date + sh.start_time + shift_len, '[)');
+    if not (n_span <@ sh_span) then
+      raise exception 'เวลาที่ลาต้องอยู่ในช่วงเวลา% (% – % น.)',
+        sh.name, to_char(sh.start_time, 'HH24:MI'), to_char(sh.end_time, 'HH24:MI');
+    end if;
+
+    if new.day_part = 'hours' then
+      new.total_days  := 0;
+      new.total_hours := round((extract(epoch from (upper(n_span) - lower(n_span))) / 3600.0)::numeric, 1);
+    else
+      new.total_days  := 0.5;
+      new.total_hours := 0;
+    end if;
+  else
+    raise exception 'รูปแบบการลาไม่ถูกต้อง';
   end if;
 
   -- ห้ามมีใบลาที่ซ้อนทับกัน (กันนับวันลาซ้ำในรายงาน)
+  --   เต็มกะ = ชนทั้งวัน / ครึ่งกะ-รายชั่วโมง = ชนเฉพาะเมื่อช่วงเวลาทับกันจริง
   if exists (
     select 1 from public.leave_requests r
     where r.employee_id = new.employee_id
       and r.status in ('submitted','approved')
-      and daterange(r.start_date, r.end_date, '[]') && daterange(new.start_date, new.end_date, '[]')
+      and (
+        ((r.day_part = 'full' or new.day_part = 'full')
+          and daterange(r.start_date, r.end_date, '[]') && daterange(new.start_date, new.end_date, '[]'))
+        or
+        (r.day_part <> 'full' and new.day_part <> 'full'
+          and public.leave_span(r.start_date, r.shift_id, r.start_time, r.end_time) && n_span)
+      )
   ) then
-    raise exception 'มีใบลาที่ทับซ้อนกับช่วงวันที่นี้อยู่แล้ว';
+    raise exception 'มีใบลาที่ทับซ้อนกับช่วงวันและเวลานี้อยู่แล้ว';
   end if;
 
   if new.status in ('approved','rejected') and auth.uid() is not null then
@@ -231,7 +327,7 @@ create trigger leave_before_insert
   before insert on public.leave_requests
   for each row execute function public.leave_before_insert();
 
--- ป้องกันการแก้คอลัมน์สำคัญ: แอดมินแก้ได้เฉพาะ status/admin_remark, พนักงานทำได้แค่ยกเลิกใบลาของตนที่ยังรออนุมัติ
+-- ป้องกันการแก้คอลัมน์สำคัญ: แอดมินแก้ได้เฉพาะ status/admin_remark, พนักงานทำได้แค่ยกเลิกใบลาของตน (ดูเงื่อนไขด้านล่าง)
 create or replace function public.leave_before_update()
 returns trigger language plpgsql security definer set search_path = public as $$
 declare adm boolean;
@@ -241,8 +337,14 @@ begin
   adm := public.is_admin_of_company(old.company_id);
 
   if not adm then
-    if not (old.status = 'submitted' and new.status = 'cancelled') then
-      raise exception 'ไม่สามารถแก้ไขใบลาได้ (ยกเลิกได้เฉพาะใบลาที่ยังรออนุมัติ)';
+    -- พนักงานยกเลิกได้: ใบที่รออนุมัติ หรือใบที่อนุมัติแล้วซึ่งยังไม่เริ่มก่อนวันนี้ (เช่น มาทำงานตามปกติ)
+    if not (
+      new.status = 'cancelled' and (
+        old.status = 'submitted'
+        or (old.status = 'approved' and old.start_date >= (now() at time zone 'Asia/Bangkok')::date)
+      )
+    ) then
+      raise exception 'ไม่สามารถยกเลิกใบลานี้ได้ (ใบลาที่เริ่มไปแล้วหรือถูกปฏิเสธ กรุณาติดต่อ Admin)';
     end if;
     new.admin_remark := old.admin_remark;
   end if;
@@ -259,6 +361,8 @@ begin
   new.reason           := old.reason;
   new.attachment_path  := old.attachment_path;
   new.submitted_at     := old.submitted_at;
+  new.shift_id         := old.shift_id;
+  new.day_part         := old.day_part;
 
   if adm and new.status is distinct from old.status then
     if new.status in ('approved','rejected') then
@@ -319,6 +423,14 @@ create policy company_admins_select on public.company_admins for select to authe
 create policy company_admins_write on public.company_admins for all to authenticated
   using (public.is_super_admin()) with check (public.is_super_admin());
 
+-- shifts
+alter table public.shifts enable row level security;
+drop policy if exists shifts_select on public.shifts;
+drop policy if exists shifts_write  on public.shifts;
+create policy shifts_select on public.shifts for select to authenticated using (true);
+create policy shifts_write  on public.shifts for all to authenticated
+  using (public.is_super_admin()) with check (public.is_super_admin());
+
 -- leave_types
 drop policy if exists leave_types_select on public.leave_types;
 drop policy if exists leave_types_write  on public.leave_types;
@@ -345,7 +457,7 @@ create policy leave_insert_admin on public.leave_requests for insert to authenti
                       where e.id = employee_id and public.is_admin_of_company(e.company_id)));
 
 create policy leave_update_emp on public.leave_requests for update to authenticated
-  using (public.is_my_employee(employee_id) and status = 'submitted')
+  using (public.is_my_employee(employee_id) and status in ('submitted','approved'))
   with check (public.is_my_employee(employee_id) and status = 'cancelled');
 
 create policy leave_update_admin on public.leave_requests for update to authenticated
@@ -359,11 +471,13 @@ create policy leave_delete on public.leave_requests for delete to authenticated
 revoke all on all tables in schema public from anon;
 revoke execute on function
   public.is_super_admin(), public.is_admin_of_company(uuid), public.is_my_employee(uuid),
-  public.is_my_active_employee(uuid), public.is_in_my_company(uuid), public.get_submit_window(uuid)
+  public.is_my_active_employee(uuid), public.is_in_my_company(uuid), public.get_submit_window(uuid),
+  public.get_shift_windows(), public.leave_span(date, uuid, time, time)
   from public, anon;
 grant execute on function
   public.is_super_admin(), public.is_admin_of_company(uuid), public.is_my_employee(uuid),
-  public.is_my_active_employee(uuid), public.is_in_my_company(uuid), public.get_submit_window(uuid)
+  public.is_my_active_employee(uuid), public.is_in_my_company(uuid), public.get_submit_window(uuid),
+  public.get_shift_windows(), public.leave_span(date, uuid, time, time)
   to authenticated, service_role;
 
 -- ---------------------------------------------------------------------
@@ -420,11 +534,18 @@ select
   lt.name         as leave_type,
   lr.reason,
   lr.total_hours,
-  lr.id           as leave_request_id
+  lr.id           as leave_request_id,
+  -- เพิ่มต่อท้าย (ห้ามสลับลำดับคอลัมน์เดิม)
+  sh.name         as shift_name,
+  lr.day_part,
+  case lr.day_part when 'full' then 1 when 'hours' then 0 else 0.5 end::numeric as leave_days,
+  lr.start_time,
+  lr.end_time
 from public.leave_requests lr
 join public.employees   e  on e.id  = lr.employee_id
 join public.companies   c  on c.id  = lr.company_id
 join public.leave_types lt on lt.id = lr.leave_type_id
+left join public.shifts sh on sh.id = lr.shift_id
 cross join lateral generate_series(lr.start_date::timestamp, lr.end_date::timestamp, interval '1 day') d
 where lr.status = 'approved';
 
@@ -442,6 +563,12 @@ insert into public.leave_types (code, name, requires_attachment, sort_order) val
   ('personal',      'ลากิจส่วนตัว',                     false, 4),
   ('personal_paid', 'ลากิจได้รับค่าจ้าง (แนบเอกสาร)',   true,  5),
   ('other',         'ลาอื่นๆ',                          false, 6)
+on conflict (code) do nothing;
+
+-- กะเริ่มต้น (แก้เวลาได้ที่หน้า "ตั้งค่า" ของแอดมิน): ยื่นลาของวันนี้ได้เฉพาะช่วง open–close
+insert into public.shifts (code, name, start_time, end_time, open_time, close_time, sort_order) values
+  ('day',   'กะเช้า', '08:00', '17:00', '05:00', '10:00', 1),
+  ('night', 'กะดึก',  '20:00', '05:00', '17:00', '22:00', 2)
 on conflict (code) do nothing;
 
 -- ---------------------------------------------------------------------

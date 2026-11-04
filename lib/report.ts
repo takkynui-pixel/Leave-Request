@@ -1,4 +1,5 @@
 import { monthRange } from '@/lib/time';
+import { PART_LABEL, type DayPart } from '@/lib/types';
 
 export interface ReportRow {
   company_id: string;
@@ -9,6 +10,17 @@ export interface ReportRow {
   leave_type: string;
   reason: string;
   total_hours: number;
+  shift_name: string | null;
+  day_part: DayPart;
+  leave_days: number;
+  start_time: string | null;
+  end_time: string | null;
+}
+
+/** ข้อความช่วงที่ลา เช่น "ครึ่งแรกของกะ 08:00–12:30" */
+export function partLabel(r: Pick<ReportRow, 'day_part' | 'start_time' | 'end_time'>) {
+  const t = r.day_part !== 'full' && r.start_time ? ` ${r.start_time.slice(0, 5)}–${(r.end_time ?? '').slice(0, 5)}` : '';
+  return `${PART_LABEL[r.day_part ?? 'full']}${t}`;
 }
 
 /** ดึงรายงานรายวันของเดือน (วนอ่านทีละ 1,000 แถว เพราะ PostgREST จำกัดต่อคำขอ) */
@@ -18,7 +30,9 @@ export async function fetchReport(supabase: any, month: string, companyId?: stri
   for (let from = 0; ; from += 1000) {
     let q = supabase
       .from('leave_daily_report')
-      .select('company_id, company_name, employee_code, full_name, leave_date, leave_type, reason, total_hours')
+      .select(
+        'company_id, company_name, employee_code, full_name, leave_date, leave_type, reason, total_hours, shift_name, day_part, leave_days, start_time, end_time',
+      )
       .gte('leave_date', first)
       .lte('leave_date', last)
       .order('company_name')
@@ -39,6 +53,7 @@ export interface SummaryRow {
   employee_code: string;
   full_name: string;
   days: number;
+  hours: number;
   byType: Record<string, number>;
 }
 
@@ -48,11 +63,13 @@ export function summarize(rows: ReportRow[]): SummaryRow[] {
     const key = `${r.company_id}|${r.employee_code}`;
     let s = map.get(key);
     if (!s) {
-      s = { company_name: r.company_name, employee_code: r.employee_code, full_name: r.full_name, days: 0, byType: {} };
+      s = { company_name: r.company_name, employee_code: r.employee_code, full_name: r.full_name, days: 0, hours: 0, byType: {} };
       map.set(key, s);
     }
-    s.days += 1;
-    s.byType[r.leave_type] = (s.byType[r.leave_type] ?? 0) + 1;
+    // ลาเต็มกะ = 1 วัน, ครึ่งกะ = 0.5 วัน, ลารายชั่วโมงนับเป็นชั่วโมง (ไม่รวมในวัน)
+    s.days += Number(r.leave_days);
+    s.hours += Number(r.total_hours) * (r.day_part === 'hours' ? 1 : 0);
+    s.byType[r.leave_type] = (s.byType[r.leave_type] ?? 0) + Number(r.leave_days);
   }
   return [...map.values()];
 }
