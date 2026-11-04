@@ -149,10 +149,39 @@ export async function updateShift(_prev: FormState, fd: FormData): Promise<FormS
   if (open > close) return { error: 'เวลาเปิดรับต้องไม่เกินเวลาปิดรับ (ช่วงยื่นลาต้องอยู่ภายในวันเดียวกัน)' };
   if (start === end) return { error: 'เวลาเริ่มและเลิกงานต้องไม่เท่ากัน' };
 
+  // ครึ่งกะ: เว้นว่างทั้ง 4 ช่อง (ตัดครึ่งอัตโนมัติ) หรือกรอกครบทั้ง 4 ช่อง
+  const h = [t('h1s'), t('h1e'), t('h2s'), t('h2e')];
+  const filled = h.filter(Boolean).length;
+  if (filled !== 0 && filled !== 4) return { error: 'เวลาครึ่งกะ: กรอกให้ครบทั้ง 4 ช่อง หรือเว้นว่างทั้งหมด' };
+  if (filled === 4) {
+    if (!h.every((v) => hm.test(v))) return { error: 'รูปแบบเวลาครึ่งกะไม่ถูกต้อง' };
+    const mins = (v: string) => Number(v.slice(0, 2)) * 60 + Number(v.slice(3));
+    const len = ((mins(end) - mins(start)) % 1440 + 1440) % 1440 || 1440;
+    // เวลาเทียบกับจุดเริ่มกะ (เวลาหลังเที่ยงคืนของกะดึกนับเป็นวันถัดไป)
+    const rel = (v: string) => ((mins(v) - mins(start)) % 1440 + 1440) % 1440;
+    const relEnd = (v: string) => rel(v) || len;
+    const [a1, b1, a2, b2] = [rel(h[0]), relEnd(h[1]), rel(h[2]), relEnd(h[3])];
+    if (!(a1 < b1 && b1 <= a2 && a2 < b2 && b2 <= len)) {
+      return {
+        error: `เวลาครึ่งกะต้องอยู่ในช่วงกะ (${start}–${end}) และเรียงลำดับ: ครึ่งแรกก่อนครึ่งหลัง ไม่ทับกัน`,
+      };
+    }
+  }
+
   const supabase = createClient();
   const { data, error } = await supabase
     .from('shifts')
-    .update({ name, start_time: start, end_time: end, open_time: open, close_time: close }) // RLS: super_admin เท่านั้น
+    .update({
+      name,
+      start_time: start,
+      end_time: end,
+      open_time: open,
+      close_time: close,
+      half1_start: h[0] || null,
+      half1_end: h[1] || null,
+      half2_start: h[2] || null,
+      half2_end: h[3] || null,
+    }) // RLS: super_admin เท่านั้น
     .eq('id', id)
     .select('id');
   if (error) return { error: error.message };

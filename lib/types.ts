@@ -54,6 +54,10 @@ export interface Shift {
   end: string;
   open: string; // เริ่มรับแจ้งลาของวันนี้
   close: string; // ปิดรับแจ้งลาของวันนี้
+  half1_start?: string | null; // ครึ่งแรก/ครึ่งหลัง (ว่าง = ตัดครึ่งเวลากะ)
+  half1_end?: string | null;
+  half2_start?: string | null;
+  half2_end?: string | null;
 }
 
 const hm = (t: string | null | undefined) => (t ? t.slice(0, 5) : '');

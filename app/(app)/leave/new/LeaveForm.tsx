@@ -72,10 +72,11 @@ export default function LeaveForm({
   const badRange = end < start;
   const crossesMidnight = shift ? toMin(shift.end) <= toMin(shift.start) : false;
 
-  // ครึ่งกะ = ตัดครึ่งเวลากะ
+  // ครึ่งกะ = ตามเวลาที่แอดมินตั้งไว้ (ถ้าไม่ได้ตั้ง ตัดครึ่งเวลากะ)
   const half = shift ? shiftLen(shift) / 2 : 0;
-  const firstHalf = shift ? `${shift.start}–${fromMin(toMin(shift.start) + half)}` : '';
-  const secondHalf = shift ? `${fromMin(toMin(shift.start) + half)}–${shift.end}` : '';
+  const mid = shift ? fromMin(toMin(shift.start) + half) : '';
+  const firstHalf = shift ? `${shift.half1_start ?? shift.start}–${shift.half1_end ?? mid}` : '';
+  const secondHalf = shift ? `${shift.half2_start ?? mid}–${shift.half2_end ?? shift.end}` : '';
 
   // ลาเป็นชั่วโมง: ต้องอยู่ในช่วงกะ (เวลาหลังเที่ยงคืนของกะดึกนับเป็นวันถัดไป)
   let hoursErr = '';

@@ -11,9 +11,13 @@ interface ShiftRow {
   end_time: string;
   open_time: string;
   close_time: string;
+  half1_start: string | null;
+  half1_end: string | null;
+  half2_start: string | null;
+  half2_end: string | null;
 }
 
-const hm = (t: string) => t.slice(0, 5);
+const hm = (t: string | null) => (t ? t.slice(0, 5) : '');
 
 export default function ShiftForm({ shift }: { shift: ShiftRow }) {
   const [state, action] = useFormState(updateShift, undefined);
@@ -40,6 +44,25 @@ export default function ShiftForm({ shift }: { shift: ShiftRow }) {
         <div>
           <label className="label">ปิดรับลาวันนี้</label>
           <input type="time" name="close" className="input" defaultValue={hm(shift.close_time)} required />
+        </div>
+      </div>
+      <p className="mb-1 mt-4 text-sm font-medium text-slate-600">เวลาลาครึ่งกะ (เว้นว่างทั้งหมด = ตัดครึ่งเวลากะอัตโนมัติ)</p>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <label className="label">ครึ่งแรก เริ่ม</label>
+          <input type="time" name="h1s" className="input" defaultValue={hm(shift.half1_start)} />
+        </div>
+        <div>
+          <label className="label">ครึ่งแรก สิ้นสุด</label>
+          <input type="time" name="h1e" className="input" defaultValue={hm(shift.half1_end)} />
+        </div>
+        <div>
+          <label className="label">ครึ่งหลัง เริ่ม</label>
+          <input type="time" name="h2s" className="input" defaultValue={hm(shift.half2_start)} />
+        </div>
+        <div>
+          <label className="label">ครึ่งหลัง สิ้นสุด</label>
+          <input type="time" name="h2e" className="input" defaultValue={hm(shift.half2_end)} />
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-3">

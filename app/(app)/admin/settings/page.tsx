@@ -14,7 +14,7 @@ export default async function SettingsPage() {
   const [{ data: companies }, { data: admins }, { data: shifts }] = await Promise.all([
     supabase.from('companies').select('id, company_name, leave_cutoff_time').order('company_name'),
     supabase.from('company_admins').select('id, full_name, role, company_id, companies(company_name)').order('role'),
-    supabase.from('shifts').select('id, name, start_time, end_time, open_time, close_time').order('sort_order'),
+    supabase.from('shifts').select('id, name, start_time, end_time, open_time, close_time, half1_start, half1_end, half2_start, half2_end').order('sort_order'),
   ]);
   const comps = (companies ?? []) as Company[];
 
@@ -26,7 +26,7 @@ export default async function SettingsPage() {
         <h2 className="card-title">กะทำงานและช่วงเวลายื่นลาของวันนี้</h2>
         <p className="mt-1 text-sm text-slate-500">
           ใช้ร่วมทุกบริษัท · พนักงานยื่นลา “ของวันนี้” ได้เฉพาะช่วง <b>เปิดรับ–ปิดรับ</b> ของกะที่เลือก (เวลาไทย) ส่วนลาล่วงหน้าวันอื่นยื่นได้ตลอด ·
-          เวลาเริ่ม-เลิกงานใช้คำนวณครึ่งกะ (ตัดครึ่งเวลากะ) และตรวจเวลาลารายชั่วโมง · ถ้าเลิกงานน้อยกว่าเริ่มงาน หมายถึงข้ามเที่ยงคืน
+          เวลาครึ่งแรก/ครึ่งหลังตั้งให้มีช่วงพักคั่นได้ · เวลาเริ่ม-เลิกงานใช้ตรวจเวลาลารายชั่วโมง · ถ้าเวลาเลิกน้อยกว่าเวลาเริ่ม หมายถึงข้ามเที่ยงคืน (เช่น 00:00 = เที่ยงคืน)
         </p>
         <div className="mt-4 space-y-4">
           {(shifts ?? []).map((sh: any) => (

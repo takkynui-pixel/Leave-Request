@@ -100,6 +100,12 @@ create table if not exists public.shifts (
   constraint shifts_window_ok check (open_time <= close_time)
 );
 
+-- เวลาครึ่งแรก/ครึ่งหลังของกะ (เว้นว่าง = ตัดครึ่งเวลากะอัตโนมัติ) — ตั้งให้มีช่วงพักคั่นได้
+alter table public.shifts add column if not exists half1_start time;
+alter table public.shifts add column if not exists half1_end   time;
+alter table public.shifts add column if not exists half2_start time;
+alter table public.shifts add column if not exists half2_end   time;
+
 alter table public.leave_requests add column if not exists shift_id uuid references public.shifts(id);
 alter table public.leave_requests add column if not exists day_part text not null default 'full';
 do $$ begin
@@ -167,7 +173,9 @@ returns json language sql volatile security definer set search_path = public as 
       select json_agg(json_build_object(
         'id', id, 'code', code, 'name', name,
         'start', to_char(start_time, 'HH24:MI'), 'end', to_char(end_time, 'HH24:MI'),
-        'open',  to_char(open_time,  'HH24:MI'), 'close', to_char(close_time, 'HH24:MI')
+        'open',  to_char(open_time,  'HH24:MI'), 'close', to_char(close_time, 'HH24:MI'),
+        'half1_start', to_char(half1_start, 'HH24:MI'), 'half1_end', to_char(half1_end, 'HH24:MI'),
+        'half2_start', to_char(half2_start, 'HH24:MI'), 'half2_end', to_char(half2_end, 'HH24:MI')
       ) order by sort_order) from public.shifts), '[]'::json)
   );
 $$;
@@ -263,11 +271,11 @@ begin
       raise exception 'การลาครึ่งกะหรือรายชั่วโมง เลือกได้เฉพาะวันเดียว';
     end if;
     if new.day_part = 'first_half' then
-      new.start_time := sh.start_time;
-      new.end_time   := sh.start_time + (shift_len / 2);
+      new.start_time := coalesce(sh.half1_start, sh.start_time);
+      new.end_time   := coalesce(sh.half1_end,   sh.start_time + (shift_len / 2));
     elsif new.day_part = 'second_half' then
-      new.start_time := sh.start_time + (shift_len / 2);
-      new.end_time   := sh.end_time;
+      new.start_time := coalesce(sh.half2_start, sh.start_time + (shift_len / 2));
+      new.end_time   := coalesce(sh.half2_end,   sh.end_time);
     else
       if new.start_time is null or new.end_time is null then
         raise exception 'กรุณาระบุเวลาเริ่มและเวลาสิ้นสุดของการลา';
@@ -570,6 +578,12 @@ insert into public.shifts (code, name, start_time, end_time, open_time, close_ti
   ('day',   'กะเช้า', '08:00', '17:00', '05:00', '10:00', 1),
   ('night', 'กะดึก',  '20:00', '05:00', '17:00', '22:00', 2)
 on conflict (code) do nothing;
+
+-- ครึ่งกะเริ่มต้น (ตั้งเฉพาะแถวที่ยังไม่เคยตั้ง — แก้ได้ที่หน้า "ตั้งค่า")
+update public.shifts set half1_start='08:00', half1_end='12:00', half2_start='13:00', half2_end='17:00'
+  where code = 'day'   and half1_start is null and half2_start is null;
+update public.shifts set half1_start='20:00', half1_end='00:00', half2_start='01:00', half2_end='05:00'
+  where code = 'night' and half1_start is null and half2_start is null;
 
 -- ---------------------------------------------------------------------
 -- 8) สร้าง super_admin คนแรก (ทำครั้งเดียว)
