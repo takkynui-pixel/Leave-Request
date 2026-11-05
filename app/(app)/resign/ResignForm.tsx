@@ -42,7 +42,7 @@ export default function ResignForm({ employees, today }: { employees: EmployeeRe
       </section>
 
       <section className="card">
-        <h2 className="mb-3 font-semibold">5. อายุงาน <span className="text-rose-500">*</span></h2>
+        <h2 className="mb-3 font-semibold">1. อายุงาน <span className="text-rose-500">*</span></h2>
         <div className="space-y-1">
           {TENURE.map(([k, label]) => (
             <label key={k} className="flex cursor-pointer items-center gap-3 rounded-2xl px-3 py-2.5 hover:bg-brand-50">
@@ -54,7 +54,7 @@ export default function ResignForm({ employees, today }: { employees: EmployeeRe
       </section>
 
       <section className="card">
-        <h2 className="mb-3 font-semibold">6. เหตุผลการลาออก <span className="text-rose-500">*</span></h2>
+        <h2 className="mb-3 font-semibold">2. เหตุผลการลาออก <span className="text-rose-500">*</span></h2>
         <div className="space-y-1">
           {REASONS.map(([k, label]) => (
             <label key={k} className="flex cursor-pointer items-center gap-3 rounded-2xl px-3 py-2.5 hover:bg-brand-50">
@@ -74,7 +74,7 @@ export default function ResignForm({ employees, today }: { employees: EmployeeRe
       </section>
 
       <section className="card">
-        <h2 className="mb-1 font-semibold">7. กรุณาอธิบายเหตุผลเพิ่มเติม <span className="text-rose-500">*</span></h2>
+        <h2 className="mb-1 font-semibold">3. กรุณาอธิบายเหตุผลเพิ่มเติม <span className="text-rose-500">*</span></h2>
         {other && (
           <p className="mb-2 text-sm text-amber-600">
             คุณเลือก “อื่นๆ” — กรุณาระบุเหตุผลที่แท้จริงในช่องนี้ (อย่างน้อย {MIN_OTHER_DETAIL} ตัวอักษร)
@@ -92,7 +92,7 @@ export default function ResignForm({ employees, today }: { employees: EmployeeRe
       </section>
 
       <section className="card">
-        <h2 className="mb-3 font-semibold">8. โปรดให้คะแนนความพึงพอใจ (1–5) <span className="text-rose-500">*</span></h2>
+        <h2 className="mb-3 font-semibold">4. โปรดให้คะแนนความพึงพอใจ (1–5) <span className="text-rose-500">*</span></h2>
         <div className="table-wrap">
           <table className="w-full min-w-[460px] text-sm">
             <thead>
