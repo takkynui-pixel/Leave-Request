@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { formatDateTH, formatDateTimeTH } from '@/lib/time';
 import StatusBadge from '@/components/StatusBadge';
 import ReviewActions from './ReviewActions';
+import CancelButton from '@/components/CancelButton';
 import { leaveAmount, partText, type Company, type LeaveRow } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -142,9 +143,12 @@ export default async function RequestsPage({ searchParams }: { searchParams: SP 
                   <td className="whitespace-nowrap text-right">
                     {r.status === 'submitted' && <ReviewActions id={r.id} />}
                     {r.status === 'approved' && (
-                      <Link href={`/print/${r.id}`} target="_blank" className="btn-outline btn-sm">
-                        พิมพ์ใบลา
-                      </Link>
+                      <div className="flex flex-col items-end gap-2">
+                        <Link href={`/print/${r.id}`} target="_blank" className="btn-outline btn-sm">
+                          พิมพ์ใบลา
+                        </Link>
+                        <CancelButton id={r.id} approved />
+                      </div>
                     )}
                   </td>
                 </tr>

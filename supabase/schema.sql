@@ -665,11 +665,14 @@ revoke all on public.resignations from anon;
 insert into public.leave_types (code, name, requires_attachment, sort_order) values
   ('annual',        'ลาพักผ่อนประจำปี',                false, 1),
   ('sick_no_cert',  'ลาป่วย (ไม่มีใบรับรองแพทย์)',      false, 2),
-  ('sick_cert',     'ลาป่วย (มีใบรับรองแพทย์)',         true,  3),
+  ('sick_cert',     'ลาป่วย (มีใบรับรองแพทย์)',         false, 3),
   ('personal',      'ลากิจส่วนตัว',                     false, 4),
   ('personal_paid', 'ลากิจได้รับค่าจ้าง (แนบเอกสาร)',   true,  5),
   ('other',         'ลาอื่นๆ',                          false, 6)
 on conflict (code) do nothing;
+
+-- ลาป่วย (มีใบรับรองแพทย์): แนบหรือไม่แนบก็ได้ (ปรับจากเดิมที่บังคับแนบ)
+update public.leave_types set requires_attachment = false where code = 'sick_cert';
 
 -- กะเริ่มต้น (แก้เวลาได้ที่หน้า "ตั้งค่า" ของแอดมิน): ยื่นลาของวันนี้ได้เฉพาะช่วง open–close
 insert into public.shifts (code, name, start_time, end_time, open_time, close_time, sort_order) values
