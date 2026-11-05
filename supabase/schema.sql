@@ -117,6 +117,31 @@ end $$;
 -- ใบลาเดิมที่ระบุเวลา = ลาเป็นชั่วโมง
 update public.leave_requests set day_part = 'hours' where start_time is not null and day_part = 'full';
 
+-- แบบฟอร์มลาออก (พนักงาน 1 คน ส่งได้ 1 ครั้ง) — ข้อมูลกรอกครบทุกข้อ
+create table if not exists public.resignations (
+  id                uuid primary key default gen_random_uuid(),
+  employee_id       uuid not null unique references public.employees(id) on delete cascade,
+  company_id        uuid not null references public.companies(id) on delete restrict,
+  tenure            text not null check (tenure in
+    ('lt1m','1to4m','4to6m','6mto1y','1to3y','3to5y','5to10y','gt10y')),
+  reason            text not null check (reason in
+    ('pay','job_nature','career_growth','supervisor','coworkers','environment','working_time',
+     'travel','family','health','study','contract_end','probation_fail','convert_te','other')),
+  detail            text not null check (char_length(btrim(detail)) >= 1),
+  rating_pay        smallint not null check (rating_pay    between 1 and 5),
+  rating_job        smallint not null check (rating_job    between 1 and 5),
+  rating_team       smallint not null check (rating_team   between 1 and 5),
+  rating_env        smallint not null check (rating_env    between 1 and 5),
+  rating_career     smallint not null check (rating_career between 1 and 5),
+  last_working_date date not null,
+  status            text not null default 'submitted' check (status in ('submitted','acknowledged')),
+  acknowledged_by   uuid references auth.users(id) on delete set null,
+  acknowledged_name text,
+  acknowledged_at   timestamptz,
+  submitted_at      timestamptz not null default now()
+);
+create index if not exists resignations_company_idx on public.resignations(company_id, submitted_at desc);
+
 -- ---------------------------------------------------------------------
 -- 2) HELPER FUNCTIONS (security definer — ใช้ใน RLS เพื่อเลี่ยง recursion)
 -- ---------------------------------------------------------------------
@@ -141,8 +166,12 @@ $$;
 
 create or replace function public.is_my_active_employee(eid uuid)
 returns boolean language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.employees
-                 where id = eid and user_id = auth.uid() and status = 'active');
+  select exists (select 1 from public.employees e
+                 where e.id = eid and e.user_id = auth.uid() and e.status = 'active'
+                   -- ลาออกแล้ว (แอดมินรับทราบ) และพ้นวันทำงานวันสุดท้าย => ถือว่าไม่ใช้งาน
+                   and not exists (select 1 from public.resignations r
+                                   where r.employee_id = e.id and r.status = 'acknowledged'
+                                     and r.last_working_date < (now() at time zone 'Asia/Bangkok')::date));
 $$;
 
 create or replace function public.is_in_my_company(cid uuid)
@@ -559,6 +588,75 @@ where lr.status = 'approved';
 
 revoke all on public.leave_daily_report from anon;
 grant select on public.leave_daily_report to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 6.1) RESIGNATIONS — กฎธุรกิจ + RLS
+-- ---------------------------------------------------------------------
+
+create or replace function public.resignation_before_insert()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare e record;
+begin
+  select * into e from public.employees where id = new.employee_id;
+  if not found then raise exception 'ไม่พบพนักงาน'; end if;
+  new.company_id := e.company_id;
+  new.status := 'submitted';
+  new.acknowledged_by := null; new.acknowledged_name := null; new.acknowledged_at := null;
+  new.submitted_at := now();
+  new.detail := btrim(new.detail);
+  if new.reason = 'other' and char_length(new.detail) < 10 then
+    raise exception 'เลือก "อื่นๆ" ต้องอธิบายเหตุผลในข้อ 7 อย่างน้อย 10 ตัวอักษร';
+  end if;
+  if new.last_working_date < (now() at time zone 'Asia/Bangkok')::date then
+    raise exception 'วันทำงานวันสุดท้ายต้องไม่เป็นวันที่ผ่านมาแล้ว';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists resignation_before_insert on public.resignations;
+create trigger resignation_before_insert before insert on public.resignations
+  for each row execute function public.resignation_before_insert();
+
+-- แก้ไขได้เฉพาะ "รับทราบ" โดยแอดมิน (เนื้อหาแบบฟอร์มแก้ไม่ได้)
+create or replace function public.resignation_before_update()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if (new.employee_id, new.company_id, new.tenure, new.reason, new.detail, new.rating_pay, new.rating_job,
+      new.rating_team, new.rating_env, new.rating_career, new.last_working_date, new.submitted_at)
+     is distinct from
+     (old.employee_id, old.company_id, old.tenure, old.reason, old.detail, old.rating_pay, old.rating_job,
+      old.rating_team, old.rating_env, old.rating_career, old.last_working_date, old.submitted_at) then
+    raise exception 'แก้ไขเนื้อหาแบบฟอร์มลาออกไม่ได้';
+  end if;
+  if new.status = 'acknowledged' and old.status = 'submitted' then
+    new.acknowledged_by := auth.uid();
+    new.acknowledged_at := now();
+    select ca.full_name into new.acknowledged_name
+      from public.company_admins ca where ca.user_id = auth.uid() limit 1;
+  elsif new.status is distinct from old.status then
+    raise exception 'เปลี่ยนสถานะไม่ได้';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists resignation_before_update on public.resignations;
+create trigger resignation_before_update before update on public.resignations
+  for each row execute function public.resignation_before_update();
+
+alter table public.resignations enable row level security;
+drop policy if exists resign_select on public.resignations;
+drop policy if exists resign_insert on public.resignations;
+drop policy if exists resign_update on public.resignations;
+drop policy if exists resign_delete on public.resignations;
+create policy resign_select on public.resignations for select to authenticated
+  using (public.is_my_employee(employee_id) or public.is_admin_of_company(company_id));
+create policy resign_insert on public.resignations for insert to authenticated
+  with check (public.is_my_active_employee(employee_id));
+create policy resign_update on public.resignations for update to authenticated
+  using (public.is_admin_of_company(company_id)) with check (public.is_admin_of_company(company_id));
+create policy resign_delete on public.resignations for delete to authenticated
+  using (public.is_super_admin());
+revoke all on public.resignations from anon;
 
 -- ---------------------------------------------------------------------
 -- 7) SEED — ประเภทการลาตามแบบฟอร์ม HR-009/Rev.-02

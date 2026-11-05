@@ -11,12 +11,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         { href: '/', label: 'ภาพรวม' },
         { href: '/admin/requests', label: 'ใบลา' },
         { href: '/admin/employees', label: 'พนักงาน' },
+        { href: '/admin/resignations', label: 'ลาออก' },
         { href: '/admin/reports', label: 'รายงาน' },
         ...(ctx.isSuper ? [{ href: '/admin/settings', label: 'ตั้งค่า' }] : []),
       ]
     : [
         { href: '/', label: 'ภาพรวม' },
         { href: '/leave/new', label: 'ยื่นใบลา' },
+        { href: '/resign', label: 'ลาออก' },
         { href: '/account', label: 'บัญชีของฉัน' },
       ];
 
