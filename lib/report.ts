@@ -15,6 +15,9 @@ export interface ReportRow {
   leave_days: number;
   start_time: string | null;
   end_time: string | null;
+  leave_code: string | null;
+  pay_deduct: boolean;
+  points_per_day: number;
 }
 
 /** ข้อความช่วงที่ลา เช่น "ครึ่งแรกของกะ 08:00–12:30" */
@@ -31,7 +34,7 @@ export async function fetchReport(supabase: any, month: string, companyId?: stri
     let q = supabase
       .from('leave_daily_report')
       .select(
-        'company_id, company_name, employee_code, full_name, leave_date, leave_type, reason, total_hours, shift_name, day_part, leave_days, start_time, end_time',
+        'company_id, company_name, employee_code, full_name, leave_date, leave_type, reason, total_hours, shift_name, day_part, leave_days, start_time, end_time, leave_code, pay_deduct, points_per_day',
       )
       .gte('leave_date', first)
       .lte('leave_date', last)

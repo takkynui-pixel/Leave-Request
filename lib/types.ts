@@ -18,7 +18,28 @@ export interface LeaveType {
   id: string;
   code: string;
   name: string;
+  name_alt?: string | null;
   requires_attachment: boolean;
+  min_days?: number | null;
+  max_days?: number | null;
+  pay_deduct?: boolean;
+  points_per_day?: number;
+}
+
+export interface LeaveSettings {
+  allow_full: boolean;
+  allow_half: boolean;
+  allow_hours: boolean;
+  max_hours: number | null;
+  note: string | null;
+}
+
+/** ผลจาก rpc get_leave_options ของบริษัทหนึ่ง */
+export interface LeaveOptions {
+  server_epoch_ms: number;
+  shifts: Shift[];
+  types: LeaveType[];
+  settings: LeaveSettings;
 }
 
 export interface Company {

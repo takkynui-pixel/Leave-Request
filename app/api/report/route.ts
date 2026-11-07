@@ -35,18 +35,21 @@ export async function GET(req: NextRequest) {
     );
   } else {
     csv = toCsv(
-      ['บริษัท', 'รหัสพนักงาน', 'ชื่อ-สกุล', 'วันที่ลา', 'ประเภทการลา', 'เหตุผลการลา', 'กะ', 'ช่วงที่ลา', 'จำนวน (วัน)', 'จำนวน (ชม.)'],
+      ['บริษัท', 'รหัสพนักงาน', 'ชื่อ-สกุล', 'วันที่ลา', 'รหัสการลา', 'ประเภทการลา', 'เหตุผลการลา', 'กะ', 'ช่วงที่ลา', 'จำนวน (วัน)', 'จำนวน (ชม.)', 'หักค่าจ้าง', 'หักแต้ม/วัน'],
       rows.map((r) => [
         r.company_name,
         r.employee_code,
         r.full_name,
         r.leave_date,
+        r.leave_code ?? '',
         r.leave_type,
         r.reason,
         r.shift_name ?? '',
         partLabel(r),
         r.leave_days,
         r.day_part === 'hours' ? r.total_hours : '',
+        r.pay_deduct ? 'หัก' : 'ไม่หัก',
+        Number(r.points_per_day) > 0 ? Number(r.points_per_day) : '',
       ]),
     );
   }

@@ -59,6 +59,19 @@ create table if not exists public.leave_types (
   sort_order          int not null default 0
 );
 
+-- ประเภทการลา: company_id = null คือ "ชุดมาตรฐาน" ใช้กับทุกบริษัทที่ยังไม่ตั้งชุดของตัวเอง
+-- บริษัทที่มีประเภทการลาของตัวเอง (active) จะใช้เฉพาะชุดนั้นแทนชุดมาตรฐาน
+alter table public.leave_types add column if not exists company_id     uuid references public.companies(id) on delete cascade;
+alter table public.leave_types add column if not exists name_alt       text;                        -- ชื่ออังกฤษ
+alter table public.leave_types add column if not exists min_days       numeric(4,1) check (min_days is null or min_days >= 0);  -- ขั้นต่ำต่อครั้ง (วัน)
+alter table public.leave_types add column if not exists max_days       numeric(4,1) check (max_days is null or max_days > 0);   -- สูงสุดต่อครั้ง (วัน)
+alter table public.leave_types add column if not exists pay_deduct     boolean not null default false;     -- หักค่าจ้าง (แสดงในรายงาน)
+alter table public.leave_types add column if not exists points_per_day numeric(3,1) not null default 0;    -- แต้มที่หักต่อวัน (แสดงในรายงาน)
+alter table public.leave_types add column if not exists active         boolean not null default true;
+alter table public.leave_types drop constraint if exists leave_types_code_key;
+create unique index if not exists leave_types_code_uq
+  on public.leave_types (coalesce(company_id, '00000000-0000-0000-0000-000000000000'::uuid), code);
+
 create table if not exists public.leave_requests (
   id               uuid primary key default gen_random_uuid(),
   employee_id      uuid not null references public.employees(id) on delete restrict,
@@ -105,6 +118,22 @@ alter table public.shifts add column if not exists half1_start time;
 alter table public.shifts add column if not exists half1_end   time;
 alter table public.shifts add column if not exists half2_start time;
 alter table public.shifts add column if not exists half2_end   time;
+
+-- กะ: company_id = null คือกะมาตรฐาน; บริษัทที่ตั้งกะของตัวเอง (active) จะใช้เฉพาะชุดนั้น
+alter table public.shifts add column if not exists company_id uuid references public.companies(id) on delete cascade;
+alter table public.shifts add column if not exists active     boolean not null default true;
+alter table public.shifts drop constraint if exists shifts_code_key;
+create unique index if not exists shifts_code_uq on public.shifts (coalesce(company_id, '00000000-0000-0000-0000-000000000000'::uuid), code);
+
+-- ตัวเลือก "ช่วงเวลาที่ลา" และข้อความแจ้งเตือนของแต่ละบริษัท (ไม่มีแถว = เปิดทุกแบบ)
+create table if not exists public.company_leave_settings (
+  company_id uuid primary key references public.companies(id) on delete cascade,
+  allow_full  boolean not null default true,    -- ลาเต็มกะ/เต็มวัน
+  allow_half  boolean not null default true,    -- ลาครึ่งแรก/ครึ่งหลัง
+  allow_hours boolean not null default true,    -- ลาระบุชั่วโมง
+  max_hours   numeric(4,1) check (max_hours is null or max_hours > 0),  -- ลารายชั่วโมงได้ไม่เกินต่อครั้ง
+  note        text                               -- ข้อความแสดงบนฟอร์มลา
+);
 
 alter table public.leave_requests add column if not exists shift_id uuid references public.shifts(id);
 alter table public.leave_requests add column if not exists day_part text not null default 'full';
@@ -194,19 +223,64 @@ end;
 $$;
 
 -- เวลาเซิร์ฟเวอร์ + กะทั้งหมด (Frontend ใช้เทียบ ไม่ใช้เวลาเครื่องพนักงาน)
-create or replace function public.get_shift_windows()
-returns json language sql volatile security definer set search_path = public as $$
-  select json_build_object(
+-- ประเภทการลา/กะ ที่ "ใช้ได้จริง" ของบริษัท: ชุดของบริษัท (active) ถ้ามี ไม่เช่นนั้นใช้ชุดมาตรฐาน
+create or replace function public.leave_type_ok(cid uuid, tid uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from public.leave_types t
+    where t.id = tid and t.active and (
+      (cid is not null and t.company_id = cid)
+      or (t.company_id is null and (cid is null or not exists (
+            select 1 from public.leave_types x where x.company_id = cid and x.active)))
+    ));
+$$;
+
+create or replace function public.shift_ok(cid uuid, sid uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from public.shifts s
+    where s.id = sid and s.active and (
+      (cid is not null and s.company_id = cid)
+      or (s.company_id is null and (cid is null or not exists (
+            select 1 from public.shifts x where x.company_id = cid and x.active)))
+    ));
+$$;
+
+drop function if exists public.get_shift_windows();
+
+-- ข้อมูลที่ฟอร์มลา/หน้าแรกใช้: เวลาเซิร์ฟเวอร์ + กะ + ประเภทการลา + ตัวเลือกช่วงที่ลา ของบริษัทนั้น
+create or replace function public.get_leave_options(p_company uuid default null)
+returns json language plpgsql volatile security definer set search_path = public as $$
+begin
+  if p_company is not null and not (public.is_admin_of_company(p_company) or public.is_in_my_company(p_company)) then
+    raise exception 'forbidden';
+  end if;
+  return json_build_object(
     'server_epoch_ms', (extract(epoch from clock_timestamp()) * 1000)::bigint,
     'shifts', coalesce((
       select json_agg(json_build_object(
-        'id', id, 'code', code, 'name', name,
-        'start', to_char(start_time, 'HH24:MI'), 'end', to_char(end_time, 'HH24:MI'),
-        'open',  to_char(open_time,  'HH24:MI'), 'close', to_char(close_time, 'HH24:MI'),
-        'half1_start', to_char(half1_start, 'HH24:MI'), 'half1_end', to_char(half1_end, 'HH24:MI'),
-        'half2_start', to_char(half2_start, 'HH24:MI'), 'half2_end', to_char(half2_end, 'HH24:MI')
-      ) order by sort_order) from public.shifts), '[]'::json)
+        'id', s.id, 'code', s.code, 'name', s.name,
+        'start', to_char(s.start_time, 'HH24:MI'), 'end', to_char(s.end_time, 'HH24:MI'),
+        'open',  to_char(s.open_time,  'HH24:MI'), 'close', to_char(s.close_time, 'HH24:MI'),
+        'half1_start', to_char(s.half1_start, 'HH24:MI'), 'half1_end', to_char(s.half1_end, 'HH24:MI'),
+        'half2_start', to_char(s.half2_start, 'HH24:MI'), 'half2_end', to_char(s.half2_end, 'HH24:MI')
+      ) order by s.sort_order, s.name)
+      from public.shifts s where public.shift_ok(p_company, s.id)), '[]'::json),
+    'types', coalesce((
+      select json_agg(json_build_object(
+        'id', t.id, 'code', t.code, 'name', t.name, 'name_alt', t.name_alt,
+        'requires_attachment', t.requires_attachment,
+        'min_days', t.min_days, 'max_days', t.max_days,
+        'pay_deduct', t.pay_deduct, 'points_per_day', t.points_per_day
+      ) order by t.sort_order, t.code)
+      from public.leave_types t where public.leave_type_ok(p_company, t.id)), '[]'::json),
+    'settings', coalesce(
+      (select json_build_object('allow_full', c.allow_full, 'allow_half', c.allow_half,
+                                'allow_hours', c.allow_hours, 'max_hours', c.max_hours, 'note', c.note)
+       from public.company_leave_settings c where c.company_id = p_company),
+      json_build_object('allow_full', true, 'allow_half', true, 'allow_hours', true, 'max_hours', null, 'note', null))
   );
+end;
 $$;
 
 -- เวลาเซิร์ฟเวอร์ + เวลา cut-off ของบริษัท (Frontend ใช้เทียบ ไม่ใช้เวลาเครื่องพนักงาน)
@@ -232,6 +306,8 @@ $$;
 create or replace function public.leave_before_insert()
 returns trigger language plpgsql security definer set search_path = public as $$
 declare
+  cs        public.company_leave_settings%rowtype;
+  days_eq   numeric;
   emp       public.employees%rowtype;
   lt        public.leave_types%rowtype;
   sh        public.shifts%rowtype;
@@ -250,6 +326,14 @@ begin
   if new.shift_id is null then raise exception 'กรุณาเลือกกะ'; end if;
   select * into sh from public.shifts where id = new.shift_id;
   if not found then raise exception 'ไม่พบกะที่เลือก'; end if;
+
+  -- ประเภทการลา/กะ ต้องเป็นของบริษัทพนักงานคนนี้ (ชุดเฉพาะบริษัท หรือชุดมาตรฐานถ้าไม่ได้ตั้งเอง)
+  if not public.leave_type_ok(emp.company_id, new.leave_type_id) then
+    raise exception 'ประเภทการลานี้ไม่ได้เปิดใช้สำหรับบริษัทของพนักงาน';
+  end if;
+  if not public.shift_ok(emp.company_id, new.shift_id) then
+    raise exception 'กะที่เลือกไม่ได้เปิดใช้สำหรับบริษัทของพนักงาน';
+  end if;
 
   -- auth.uid() เป็น null = service_role / SQL editor (ระบบหลังบ้าน) ถือว่าเป็นแอดมิน
   is_adm := auth.uid() is null or public.is_admin_of_company(emp.company_id);
@@ -328,6 +412,32 @@ begin
     end if;
   else
     raise exception 'รูปแบบการลาไม่ถูกต้อง';
+  end if;
+
+  -- เงื่อนไขของบริษัท: ช่วงที่ลาที่เปิดให้เลือก + ขั้นต่ำ/สูงสุดของประเภทการลา (แอดมินบันทึกแทนได้โดยไม่ติดเงื่อนไขนี้)
+  if not is_adm then
+    select * into cs from public.company_leave_settings where company_id = emp.company_id;
+    if new.day_part = 'full' and not coalesce(cs.allow_full, true) then
+      raise exception 'บริษัทนี้ไม่เปิดให้ลาเต็มกะ';
+    elsif new.day_part in ('first_half','second_half') and not coalesce(cs.allow_half, true) then
+      raise exception 'บริษัทนี้ไม่เปิดให้ลาครึ่งกะ';
+    elsif new.day_part = 'hours' then
+      if not coalesce(cs.allow_hours, true) then raise exception 'บริษัทนี้ไม่เปิดให้ลาระบุชั่วโมง'; end if;
+      if cs.max_hours is not null and new.total_hours > cs.max_hours then
+        raise exception 'ลารายชั่วโมงได้ไม่เกิน % ชั่วโมงต่อครั้ง', trim_scale(cs.max_hours);
+      end if;
+    end if;
+
+    days_eq := case new.day_part
+                 when 'full'  then new.total_days
+                 when 'hours' then new.total_hours / nullif(extract(epoch from shift_len) / 3600.0, 0)
+                 else 0.5 end;
+    if lt.min_days is not null and days_eq < lt.min_days then
+      raise exception 'ประเภท "%" ต้องลาขั้นต่ำ % วันต่อครั้ง', lt.name, trim_scale(lt.min_days);
+    end if;
+    if lt.max_days is not null and days_eq > lt.max_days then
+      raise exception 'ประเภท "%" ลาได้สูงสุด % วันต่อครั้ง', lt.name, trim_scale(lt.max_days);
+    end if;
   end if;
 
   -- ห้ามมีใบลาที่ซ้อนทับกัน (กันนับวันลาซ้ำในรายงาน)
@@ -466,14 +576,26 @@ drop policy if exists shifts_select on public.shifts;
 drop policy if exists shifts_write  on public.shifts;
 create policy shifts_select on public.shifts for select to authenticated using (true);
 create policy shifts_write  on public.shifts for all to authenticated
-  using (public.is_super_admin()) with check (public.is_super_admin());
+  using (public.is_super_admin() or (company_id is not null and public.is_admin_of_company(company_id)))
+  with check (public.is_super_admin() or (company_id is not null and public.is_admin_of_company(company_id)));
 
 -- leave_types
 drop policy if exists leave_types_select on public.leave_types;
 drop policy if exists leave_types_write  on public.leave_types;
 create policy leave_types_select on public.leave_types for select to authenticated using (true);
 create policy leave_types_write  on public.leave_types for all to authenticated
-  using (public.is_super_admin()) with check (public.is_super_admin());
+  using (public.is_super_admin() or (company_id is not null and public.is_admin_of_company(company_id)))
+  with check (public.is_super_admin() or (company_id is not null and public.is_admin_of_company(company_id)));
+
+-- company_leave_settings
+alter table public.company_leave_settings enable row level security;
+drop policy if exists cls_select on public.company_leave_settings;
+drop policy if exists cls_write  on public.company_leave_settings;
+create policy cls_select on public.company_leave_settings for select to authenticated
+  using (public.is_admin_of_company(company_id) or public.is_in_my_company(company_id));
+create policy cls_write on public.company_leave_settings for all to authenticated
+  using (public.is_admin_of_company(company_id)) with check (public.is_admin_of_company(company_id));
+revoke all on public.company_leave_settings from anon;
 
 -- leave_requests
 drop policy if exists leave_select       on public.leave_requests;
@@ -509,12 +631,14 @@ revoke all on all tables in schema public from anon;
 revoke execute on function
   public.is_super_admin(), public.is_admin_of_company(uuid), public.is_my_employee(uuid),
   public.is_my_active_employee(uuid), public.is_in_my_company(uuid), public.get_submit_window(uuid),
-  public.get_shift_windows(), public.leave_span(date, uuid, time, time)
+  public.get_leave_options(uuid), public.leave_type_ok(uuid, uuid), public.shift_ok(uuid, uuid),
+  public.leave_span(date, uuid, time, time)
   from public, anon;
 grant execute on function
   public.is_super_admin(), public.is_admin_of_company(uuid), public.is_my_employee(uuid),
   public.is_my_active_employee(uuid), public.is_in_my_company(uuid), public.get_submit_window(uuid),
-  public.get_shift_windows(), public.leave_span(date, uuid, time, time)
+  public.get_leave_options(uuid), public.leave_type_ok(uuid, uuid), public.shift_ok(uuid, uuid),
+  public.leave_span(date, uuid, time, time)
   to authenticated, service_role;
 
 -- ---------------------------------------------------------------------
@@ -577,7 +701,10 @@ select
   lr.day_part,
   case lr.day_part when 'full' then 1 when 'hours' then 0 else 0.5 end::numeric as leave_days,
   lr.start_time,
-  lr.end_time
+  lr.end_time,
+  lt.code           as leave_code,
+  lt.pay_deduct,
+  lt.points_per_day
 from public.leave_requests lr
 join public.employees   e  on e.id  = lr.employee_id
 join public.companies   c  on c.id  = lr.company_id
@@ -662,29 +789,33 @@ revoke all on public.resignations from anon;
 -- 7) SEED — ประเภทการลาตามแบบฟอร์ม HR-009/Rev.-02
 -- ---------------------------------------------------------------------
 
-insert into public.leave_types (code, name, requires_attachment, sort_order) values
+insert into public.leave_types (code, name, requires_attachment, sort_order)
+select v.* from (values
   ('annual',        'ลาพักผ่อนประจำปี',                false, 1),
   ('sick_no_cert',  'ลาป่วย (ไม่มีใบรับรองแพทย์)',      false, 2),
   ('sick_cert',     'ลาป่วย (มีใบรับรองแพทย์)',         false, 3),
   ('personal',      'ลากิจส่วนตัว',                     false, 4),
   ('personal_paid', 'ลากิจได้รับค่าจ้าง (แนบเอกสาร)',   true,  5),
   ('other',         'ลาอื่นๆ',                          false, 6)
-on conflict (code) do nothing;
+) as v(code, name, requires_attachment, sort_order)
+where not exists (select 1 from public.leave_types t where t.company_id is null and t.code = v.code);
 
 -- ลาป่วย (มีใบรับรองแพทย์): แนบหรือไม่แนบก็ได้ (ปรับจากเดิมที่บังคับแนบ)
-update public.leave_types set requires_attachment = false where code = 'sick_cert';
+update public.leave_types set requires_attachment = false where code = 'sick_cert' and company_id is null;
 
 -- กะเริ่มต้น (แก้เวลาได้ที่หน้า "ตั้งค่า" ของแอดมิน): ยื่นลาของวันนี้ได้เฉพาะช่วง open–close
-insert into public.shifts (code, name, start_time, end_time, open_time, close_time, sort_order) values
-  ('day',   'กะเช้า', '08:00', '17:00', '05:00', '10:00', 1),
-  ('night', 'กะดึก',  '20:00', '05:00', '17:00', '22:00', 2)
-on conflict (code) do nothing;
+insert into public.shifts (code, name, start_time, end_time, open_time, close_time, sort_order)
+select v.* from (values
+  ('day',   'กะเช้า', '08:00'::time, '17:00'::time, '05:00'::time, '10:00'::time, 1),
+  ('night', 'กะดึก',  '20:00'::time, '05:00'::time, '17:00'::time, '22:00'::time, 2)
+) as v(code, name, start_time, end_time, open_time, close_time, sort_order)
+where not exists (select 1 from public.shifts t where t.company_id is null and t.code = v.code);
 
 -- ครึ่งกะเริ่มต้น (ตั้งเฉพาะแถวที่ยังไม่เคยตั้ง — แก้ได้ที่หน้า "ตั้งค่า")
 update public.shifts set half1_start='08:00', half1_end='12:00', half2_start='13:00', half2_end='17:00'
-  where code = 'day'   and half1_start is null and half2_start is null;
+  where code = 'day'   and company_id is null and half1_start is null and half2_start is null;
 update public.shifts set half1_start='20:00', half1_end='00:00', half2_start='01:00', half2_end='05:00'
-  where code = 'night' and half1_start is null and half2_start is null;
+  where code = 'night' and company_id is null and half1_start is null and half2_start is null;
 
 -- ---------------------------------------------------------------------
 -- 8) สร้าง super_admin คนแรก (ทำครั้งเดียว)

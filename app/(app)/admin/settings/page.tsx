@@ -14,7 +14,7 @@ export default async function SettingsPage() {
   const [{ data: companies }, { data: admins }, { data: shifts }] = await Promise.all([
     supabase.from('companies').select('id, company_name, leave_cutoff_time').order('company_name'),
     supabase.from('company_admins').select('id, full_name, role, company_id, companies(company_name)').order('role'),
-    supabase.from('shifts').select('id, name, start_time, end_time, open_time, close_time, half1_start, half1_end, half2_start, half2_end').order('sort_order'),
+    supabase.from('shifts').select('id, name, start_time, end_time, open_time, close_time, half1_start, half1_end, half2_start, half2_end').is('company_id', null).eq('active', true).order('sort_order'),
   ]);
   const comps = (companies ?? []) as Company[];
 
@@ -25,7 +25,7 @@ export default async function SettingsPage() {
       <section>
         <div className="mb-3 px-1">
           <h2 className="card-title">กะทำงานและเวลายื่นลา</h2>
-          <p className="mt-0.5 text-sm text-slate-500">ใช้ร่วมทุกบริษัท · เวลาแบบ 24 ชั่วโมง (เวลาไทย)</p>
+          <p className="mt-0.5 text-sm text-slate-500">ชุดมาตรฐาน ใช้กับบริษัทที่ยังไม่ได้ตั้งกะของตัวเอง (ตั้งเฉพาะบริษัทได้ที่เมนู “เงื่อนไขการลา”) · เวลาแบบ 24 ชั่วโมง (เวลาไทย)</p>
         </div>
         <div className="grid gap-5 xl:grid-cols-2">
           {(shifts ?? []).map((sh: any) => (

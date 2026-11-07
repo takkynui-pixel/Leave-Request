@@ -51,6 +51,8 @@ async function EmployeeHome({ hello, submitted }: { hello: string; submitted: bo
 
   const todayTH = thaiParts(Date.now()).date;
 
+  const companyIds = [...new Set(ctx.employees.map((e) => e.company_id))];
+
   // สองคำขอทำงานพร้อมกัน (ไม่รอกัน)
   const [{ data }, winRes] = await Promise.all([
     supabase
@@ -59,17 +61,23 @@ async function EmployeeHome({ hello, submitted }: { hello: string; submitted: bo
       .in('employee_id', ctx.employees.map((e) => e.id))
       .order('submitted_at', { ascending: false })
       .limit(30),
-    supabase.rpc('get_shift_windows'),
+    // กะของแต่ละบริษัท (ต่างกันได้) + เวลาเซิร์ฟเวอร์
+    Promise.all(companyIds.map((id) => supabase.rpc('get_leave_options', { p_company: id }))),
   ]);
   const rows = (data ?? []) as LeaveRow[];
 
   // ช่วงเวลายื่นลาของ "วันนี้" ของแต่ละกะ (เทียบเวลาเซิร์ฟเวอร์)
-  const win = winRes.data as { server_epoch_ms: number; shifts: Shift[] } | null;
-  const nowTime = thaiParts(win?.server_epoch_ms ?? Date.now()).time;
-  const shiftStates = (win?.shifts ?? []).map((sh) => ({
-    ...sh,
-    isOpen: nowTime >= sh.open && nowTime <= sh.close,
-  }));
+  const wins = winRes.map((r) => r.data as { server_epoch_ms: number; shifts: Shift[] } | null);
+  const nowTime = thaiParts(wins[0]?.server_epoch_ms ?? Date.now()).time;
+  const multiCompany = companyIds.length > 1;
+  const shiftStates = companyIds.flatMap((cid, i) =>
+    (wins[i]?.shifts ?? []).map((sh) => ({
+      ...sh,
+      key: `${cid}-${sh.id}`,
+      company: multiCompany ? ctx.employees.find((e) => e.company_id === cid)?.company_name ?? '' : '',
+      isOpen: nowTime >= sh.open && nowTime <= sh.close,
+    })),
+  );
 
   const pending = rows.filter((r) => r.status === 'submitted').length;
   const approved = rows.filter((r) => r.status === 'approved').length;
@@ -91,9 +99,12 @@ async function EmployeeHome({ hello, submitted }: { hello: string; submitted: bo
           <p className="mt-5 text-lg font-semibold">เวลายื่นลาของวันนี้</p>
           <ul className="mt-3 space-y-2.5">
             {shiftStates.map((sh) => (
-              <li key={sh.id} className="flex items-center justify-between gap-3 rounded-2xl bg-white/15 px-4 py-3">
+              <li key={sh.key} className="flex items-center justify-between gap-3 rounded-2xl bg-white/15 px-4 py-3">
                 <div>
-                  <p className="font-semibold">{sh.name}</p>
+                  <p className="font-semibold">
+                    {sh.company && <span className="mr-1.5 text-xs font-normal opacity-80">{sh.company} ·</span>}
+                    {sh.name}
+                  </p>
                   <p className="text-2xl font-bold leading-tight">
                     {sh.open}–{sh.close} น.
                   </p>

@@ -11,6 +11,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         { href: '/', label: 'ภาพรวม' },
         { href: '/admin/requests', label: 'ใบลา' },
         { href: '/admin/employees', label: 'พนักงาน' },
+        { href: '/admin/leave-rules', label: 'เงื่อนไขการลา' },
         { href: '/admin/resignations', label: 'ลาออก' },
         { href: '/admin/reports', label: 'รายงาน' },
         ...(ctx.isSuper ? [{ href: '/admin/settings', label: 'ตั้งค่า' }] : []),

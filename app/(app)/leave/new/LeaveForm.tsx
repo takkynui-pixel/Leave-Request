@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { addDays, formatDateTH, thaiParts } from '@/lib/time';
-import { PART_LABEL, type DayPart, type EmployeeRef, type LeaveType, type Shift } from '@/lib/types';
+import { PART_LABEL, type DayPart, type EmployeeRef, type LeaveOptions, type LeaveType, type Shift } from '@/lib/types';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const ALLOWED = ['image/jpeg', 'image/png', 'application/pdf'];
@@ -25,15 +25,26 @@ const shiftLen = (s: Shift) => {
 
 const PARTS: DayPart[] = ['full', 'first_half', 'second_half', 'hours'];
 
+/** เงื่อนไขของประเภทการลา เช่น "ขั้นต่ำ 1 วัน · สูงสุด 5 วัน · หักค่าจ้าง · หัก 3 แต้ม/วัน" */
+function typeRules(t: LeaveType) {
+  const out: string[] = [];
+  if (t.min_days != null) out.push(`ขั้นต่ำ ${Number(t.min_days)} วัน`);
+  if (t.max_days != null) out.push(`สูงสุด ${Number(t.max_days)} วัน`);
+  if (t.pay_deduct) out.push('หักค่าจ้าง');
+  if (Number(t.points_per_day) > 0) out.push(`หัก ${Number(t.points_per_day)} แต้ม/วัน`);
+  return out.join(' · ');
+}
+
+const partsOf = (o: LeaveOptions): DayPart[] =>
+  PARTS.filter((p) => (p === 'full' ? o.settings.allow_full : p === 'hours' ? o.settings.allow_hours : o.settings.allow_half));
+
 export default function LeaveForm({
   employees,
-  types,
-  shifts,
+  options,
   serverEpochMs,
 }: {
   employees: EmployeeRef[];
-  types: LeaveType[];
-  shifts: Shift[];
+  options: Record<string, LeaveOptions>;
   serverEpochMs: number;
 }) {
   const router = useRouter();
@@ -51,12 +62,16 @@ export default function LeaveForm({
 
   const [employeeId, setEmployeeId] = useState(employees[0].id);
   const emp = employees.find((e) => e.id === employeeId)!;
+  // ตัวเลือกของบริษัทที่เลือก (ประเภทการลา/กะ/ช่วงที่ลา ต่างกันตามบริษัท)
+  const opt = options[emp.company_id];
+  const { shifts, types, settings } = opt;
+  const parts = partsOf(opt);
 
   // เริ่มต้น: เลือกกะที่กำลังเปิดรับอยู่ ถ้าไม่มี → กะแรก และตั้งวันลาเป็นพรุ่งนี้
   const [shiftId, setShiftId] = useState(() => (shifts.find(inWindow) ?? shifts[0])?.id ?? '');
   const shift = shifts.find((s) => s.id === shiftId);
   const [typeId, setTypeId] = useState('');
-  const [part, setPart] = useState<DayPart>('full');
+  const [part, setPart] = useState<DayPart>(parts[0] ?? 'full');
   const [start, setStart] = useState(() => (shifts.some(inWindow) ? now.date : addDays(now.date, 1)));
   const [end, setEnd] = useState(start);
   const [startTime, setStartTime] = useState('');
@@ -96,15 +111,36 @@ export default function LeaveForm({
   const days = badRange ? 0 : Math.round((Date.parse(end) - Date.parse(start)) / 86400000) + 1;
   const amount = part === 'full' ? `${days} วัน` : part === 'hours' ? `${hoursValue} ชั่วโมง` : '0.5 วัน';
 
+  // เงื่อนไขของบริษัท/ประเภทการลา (ฐานข้อมูลตรวจซ้ำอีกชั้น)
+  const daysEq = part === 'full' ? days : part === 'hours' ? (shift ? hoursValue / (shiftLen(shift) / 60) : 0) : 0.5;
+  let ruleErr = '';
+  if (type && !(part === 'hours' && !!hoursErr)) {
+    if (type.min_days != null && daysEq < Number(type.min_days)) ruleErr = `ประเภท “${type.name}” ต้องลาขั้นต่ำ ${Number(type.min_days)} วันต่อครั้ง`;
+    else if (type.max_days != null && daysEq > Number(type.max_days)) ruleErr = `ประเภท “${type.name}” ลาได้สูงสุด ${Number(type.max_days)} วันต่อครั้ง`;
+  }
+  if (!ruleErr && part === 'hours' && settings.max_hours != null && hoursValue > Number(settings.max_hours))
+    ruleErr = `ลารายชั่วโมงได้ไม่เกิน ${Number(settings.max_hours)} ชั่วโมงต่อครั้ง`;
+
   const windowBlock =
     shift && start === now.date && !inWindow(shift)
       ? `การลา${shift.name}ของวันนี้ ยื่นได้เฉพาะเวลา ${shift.open}–${shift.close} น. (ตอนนี้ ${now.time} น.) ` +
         'กรุณาติดต่อ Admin หรือหัวหน้างาน หรือเลือกวันลาเป็นวันถัดไป'
       : '';
-  const blocker = backdated ? 'ไม่สามารถแจ้งลาย้อนหลังได้ กรุณาติดต่อ Admin' : windowBlock || (badRange ? 'วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่ม' : '');
+  const blocker = backdated ? 'ไม่สามารถแจ้งลาย้อนหลังได้ กรุณาติดต่อ Admin' : windowBlock || (badRange ? 'วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่ม' : '') || ruleErr;
 
   const canSubmit =
     !busy && !blocker && !!typeId && !!shiftId && reason.trim().length > 0 && (!needFile || !!file) && !hoursErr;
+
+  function changeEmployee(id: string) {
+    const e2 = employees.find((e) => e.id === id)!;
+    const o2 = options[e2.company_id];
+    setEmployeeId(id);
+    setShiftId((o2.shifts.find(inWindow) ?? o2.shifts[0])?.id ?? '');
+    setTypeId('');
+    setPart(partsOf(o2)[0] ?? 'full');
+    setFile(null);
+    setError('');
+  }
 
   function pickPart(p: DayPart) {
     setPart(p);
@@ -188,7 +224,7 @@ export default function LeaveForm({
         {employees.length > 1 && (
           <div>
             <label className="label">บริษัท / รหัสพนักงาน</label>
-            <select className="input" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+            <select className="input" value={employeeId} onChange={(e) => changeEmployee(e.target.value)}>
               {employees.map((e) => (
                 <option key={e.id} value={e.id}>
                   {e.company_name} — {e.employee_code}
@@ -245,6 +281,12 @@ export default function LeaveForm({
           </div>
         </div>
 
+        {(shifts.length === 0 || types.length === 0) && (
+          <p className="alert-error">บริษัทนี้ยังไม่ได้ตั้งค่า{shifts.length === 0 ? 'กะ' : 'ประเภทการลา'} กรุณาติดต่อฝ่ายบุคคล</p>
+        )}
+
+        {settings.note && <p className="whitespace-pre-wrap rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-700">{settings.note}</p>}
+
         <div>
           <label className="label">ประเภทการลา</label>
           <div className="grid gap-2 sm:grid-cols-2">
@@ -264,7 +306,11 @@ export default function LeaveForm({
                   checked={typeId === t.id}
                   onChange={() => setTypeId(t.id)}
                 />
-                <span className="flex-1">{t.name}</span>
+                <span className="flex-1">
+                  {t.name}
+                  {t.name_alt && <span className="ml-2 text-xs font-normal text-slate-400">{t.name_alt}</span>}
+                  {typeRules(t) && <span className="mt-0.5 block text-xs font-normal text-slate-400">{typeRules(t)}</span>}
+                </span>
                 {t.requires_attachment && <span title="ต้องแนบเอกสาร">📎</span>}
               </label>
             ))}
@@ -274,7 +320,7 @@ export default function LeaveForm({
         <div>
           <label className="label">ช่วงที่ลา</label>
           <div className="grid gap-2 sm:grid-cols-2">
-            {PARTS.map((p) => (
+            {parts.map((p) => (
               <label
                 key={p}
                 className={`flex cursor-pointer items-center gap-3 rounded-2xl border px-4 py-3 text-sm transition ${

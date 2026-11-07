@@ -17,6 +17,7 @@ interface ShiftRow {
   half1_end: string | null;
   half2_start: string | null;
   half2_end: string | null;
+  active?: boolean;
 }
 
 const hm = (t: string | null) => (t ? t.slice(0, 5) : '');
@@ -62,7 +63,7 @@ function Range({
   );
 }
 
-export default function ShiftForm({ shift }: { shift: ShiftRow }) {
+export default function ShiftForm({ shift, companyMode = false }: { shift: ShiftRow; companyMode?: boolean }) {
   const [state, action] = useFormState(updateShift, undefined);
 
   const [v, setV] = useState({
@@ -91,8 +92,9 @@ export default function ShiftForm({ shift }: { shift: ShiftRow }) {
   }
 
   return (
-    <form action={action} className="card flex flex-col">
+    <form action={action} className={`card flex flex-col ${companyMode && shift.active === false ? 'opacity-70' : ''}`}>
       <input type="hidden" name="id" value={shift.id} />
+      {companyMode && <input type="hidden" name="has_active" value="1" />}
 
       <div className="mb-3 flex items-center gap-3">
         <input
@@ -137,7 +139,13 @@ export default function ShiftForm({ shift }: { shift: ShiftRow }) {
       )}
 
       <div className="mt-auto flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
-        <div className="min-w-0 text-sm">
+        <div className="flex min-w-0 flex-wrap items-center gap-4 text-sm">
+          {companyMode && (
+            <label className="flex items-center gap-2">
+              <input type="checkbox" name="active" defaultChecked={shift.active !== false} className="h-4 w-4 accent-brand-600" />
+              เปิดใช้กะนี้
+            </label>
+          )}
           {state?.ok && <span className="text-emerald-600">✓ {state.ok}</span>}
           {state?.error && <span className="text-rose-600">{state.error}</span>}
         </div>

@@ -101,7 +101,17 @@ export default async function ReportsPage({ searchParams }: { searchParams: { co
                   </td>
                   <td>{r.full_name}</td>
                   <td className="whitespace-nowrap">{formatDateTH(r.leave_date)}</td>
-                  <td>{r.leave_type}</td>
+                  <td>
+                    {r.leave_code && <span className="mr-1.5 rounded-md bg-slate-100 px-1.5 py-0.5 text-xs font-semibold text-slate-600">{r.leave_code}</span>}
+                    {r.leave_type}
+                    {(r.pay_deduct || Number(r.points_per_day) > 0) && (
+                      <p className="text-xs text-slate-400">
+                        {r.pay_deduct ? 'หักค่าจ้าง' : ''}
+                        {r.pay_deduct && Number(r.points_per_day) > 0 ? ' · ' : ''}
+                        {Number(r.points_per_day) > 0 ? `หัก ${Number(r.points_per_day)} แต้ม/วัน` : ''}
+                      </p>
+                    )}
+                  </td>
                   <td className="whitespace-nowrap text-slate-600">
                     {r.shift_name}
                     <p className="text-xs text-slate-400">

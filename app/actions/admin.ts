@@ -181,12 +181,15 @@ export async function updateShift(_prev: FormState, fd: FormData): Promise<FormS
       half1_end: h[1] || null,
       half2_start: h[2] || null,
       half2_end: h[3] || null,
-    }) // RLS: super_admin เท่านั้น
+      // ฟอร์มของบริษัทมีช่อง "เปิดใช้กะนี้" (has_active) — ฟอร์มชุดมาตรฐานไม่มี
+      ...(fd.get('has_active') ? { active: fd.get('active') === 'on' } : {}),
+    }) // RLS: super_admin (ชุดมาตรฐาน) หรือแอดมินของบริษัทนั้น (กะเฉพาะบริษัท)
     .eq('id', id)
     .select('id');
   if (error) return { error: error.message };
-  if (!data?.length) return { error: 'ไม่มีสิทธิ์แก้ไข (เฉพาะ Super Admin)' };
+  if (!data?.length) return { error: 'ไม่มีสิทธิ์แก้ไข' };
   revalidatePath('/admin/settings');
+  revalidatePath('/admin/leave-rules');
   revalidatePath('/');
   revalidatePath('/leave/new');
   return { ok: 'บันทึกแล้ว' };
